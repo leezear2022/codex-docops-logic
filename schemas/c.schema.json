@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocOps constraint file",
+  "type": "object",
+  "required": ["v", "rule"],
+  "properties": {
+    "v": {"type": "integer"},
+    "rule": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "if", "sev"],
+        "properties": {
+          "id": {"type": "string"},
+          "if": {"type": "string"},
+          "req": {"type": "string"},
+          "make": {"type": "string"},
+          "sev": {"enum": ["b", "w", "s", "i"]}
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

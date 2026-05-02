@@ -1,0 +1,30 @@
+---
+name: docops-init
+description: Initialize DocOps Logic state for a topic with low-token .docops files and short AGENTS guidance.
+---
+
+# init
+
+Use when starting DocOps Logic for a repo or new topic.
+
+Read:
+- AGENTS.md if present
+
+Write:
+- .docops/s.md
+- .docops/k.jsonl
+- .docops/c.yaml
+- .docops/p.yaml
+- .docops/ev.jsonl
+- AGENTS.md only if missing or safely appendable
+
+Prefer:
+```bash
+python3 codex-docops-logic/scripts/dol.py init <topic>
+python3 codex-docops-logic/scripts/dol.py status
+python3 codex-docops-logic/scripts/dol.py lint --soft
+```
+
+Rules:
+- Keep default context to AGENTS.md, .docops/s.md, .docops/c.yaml, and tail .docops/k.jsonl.
+- Do not create long docs unless explicitly enabled.

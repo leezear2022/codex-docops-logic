@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocOps state parsed from .docops/s.md",
+  "type": "object",
+  "required": ["tp", "rm", "st", "stat", "health", "updated"],
+  "properties": {
+    "tp": {"type": "string"},
+    "rm": {"type": "string", "pattern": "^v[0-9][0-9]$"},
+    "st": {"type": "string", "pattern": "^s[0-9][0-9]$"},
+    "stat": {"enum": ["active", "blocked", "done", "paused"]},
+    "health": {"enum": ["green", "yellow", "red"]},
+    "pr": {"type": "string"},
+    "last_ch": {"type": "string"},
+    "last_va": {"type": "string"},
+    "blk": {"type": "string"},
+    "next": {"type": "string"},
+    "updated": {"type": "string"}
+  },
+  "additionalProperties": true
+}

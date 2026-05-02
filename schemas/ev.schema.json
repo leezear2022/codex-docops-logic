@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocOps event JSONL row",
+  "type": "object",
+  "required": ["id", "ts", "ty"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^ev[0-9]{6}$"},
+    "ts": {"type": "string"},
+    "ty": {"enum": ["init", "tp", "rm", "st", "pr", "ss", "ch", "va", "rk", "dc", "hf", "ls", "kb", "learn", "prom", "cmd"]},
+    "st": {"type": "string"},
+    "rm": {"type": "string"},
+    "pr": {"type": "integer"},
+    "slug": {"type": "string"},
+    "result": {"enum": ["pass", "fail", "mix", "def"]},
+    "action": {"type": "string"},
+    "hist": {"type": "boolean"},
+    "cmd": {"type": "string"},
+    "card": {"type": "string"}
+  },
+  "additionalProperties": true
+}

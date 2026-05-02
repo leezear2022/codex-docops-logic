@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocOps symbolic knowledge card JSONL row",
+  "type": "object",
+  "required": ["id", "ty", "k", "st"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[RCLXDESPAQ][0-9][0-9][0-9]$"},
+    "ty": {"enum": ["R", "C", "L", "X", "D", "E", "S", "P", "A", "Q"]},
+    "k": {"type": "string"},
+    "sc": {"type": "string"},
+    "if": {"type": "string"},
+    "req": {"type": "string"},
+    "bad": {"type": "string"},
+    "seq": {"type": "string"},
+    "v": {"type": "string"},
+    "cost": {"type": "string"},
+    "sev": {"enum": ["b", "w", "s", "i"]},
+    "conf": {"type": "number"},
+    "st": {"enum": ["cand", "acc", "ret", "blk", "pass", "fail", "mix", "def"]}
+  },
+  "additionalProperties": true
+}

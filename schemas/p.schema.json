@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocOps profile",
+  "type": "object",
+  "properties": {
+    "u": {
+      "type": "object",
+      "properties": {
+        "lang": {"type": "string"},
+        "tok": {"enum": ["low", "med", "high"]},
+        "style": {"type": "string"},
+        "prefer": {"type": "array", "items": {"type": "string"}},
+        "avoid": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

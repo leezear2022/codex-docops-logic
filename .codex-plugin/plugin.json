@@ -1,0 +1,42 @@
+{
+  "name": "docops-logic",
+  "version": "0.1.0",
+  "description": "Low-token DocOps workflow with symbolic knowledge cards, deterministic constraints, and a CP-ready solver interface.",
+  "author": {
+    "name": "DocOps Logic"
+  },
+  "homepage": "https://github.com/docops-logic/codex-docops-logic",
+  "repository": "https://github.com/docops-logic/codex-docops-logic",
+  "license": "MIT",
+  "keywords": [
+    "docops",
+    "workflow",
+    "constraints",
+    "symbolic-kb",
+    "cp-ready"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "DocOps Logic",
+    "shortDescription": "Low-token DocOps workflows with symbolic constraints",
+    "longDescription": "DocOps Logic provides a token-lite workflow harness for long, multi-stage engineering work. It tracks state, events, validations, handoffs, lessons, risks, decisions, and symbolic knowledge cards in CP-ready files without requiring external services or CP-SAT dependencies in Phase 1.",
+    "developerName": "DocOps Logic",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/docops-logic/codex-docops-logic",
+    "privacyPolicyURL": "https://github.com/docops-logic/codex-docops-logic",
+    "termsOfServiceURL": "https://github.com/docops-logic/codex-docops-logic",
+    "defaultPrompt": [
+      "Initialize DocOps Logic for this project",
+      "Show DocOps status and lint reminders",
+      "Log a change and validation"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
+}

@@ -11,6 +11,7 @@ Rules:
 - keep README static
 - update s.md after work
 - log ch for code/plan changes
+- write each small plan and small changelog as a standalone doc
 - claim fix only with va
 - use short tokens
 

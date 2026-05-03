@@ -35,6 +35,7 @@ STATE_ORDER = [
 CARD_TYPES = {"R", "C", "L", "X", "D", "E", "S", "P", "A", "Q"}
 VA_RESULTS = {"pass", "fail", "mix", "def"}
 SOLVE_MODES = {"check", "repair", "plan", "conflict"}
+DOC_KINDS = {"plan", "changelog"}
 
 
 def now_iso() -> str:
@@ -192,6 +193,7 @@ def default_cards() -> list[dict[str, Any]]:
         {"id": "X001", "ty": "X", "k": "unit.not.perf", "sc": "repo", "if": "claim.perf", "bad": "unit.only", "req": "bench", "st": "acc"},
         {"id": "D001", "ty": "D", "k": "fixture.fail", "sc": "repo", "seq": "env->fixture->parser", "st": "cand"},
         {"id": "P001", "ty": "P", "k": "token.mode", "sc": "user", "v": "short", "cost": "long_doc:+2", "st": "acc"},
+        {"id": "C002", "ty": "C", "k": "doc.separate.microdocs", "sc": "repo", "v": "small plans and small changelogs require standalone docs", "st": "acc"},
     ]
 
 
@@ -382,6 +384,59 @@ def maybe_write_long_doc(kind: str, event: dict[str, Any], root: Path | None = N
     )
     write_if_missing(path, text)
     return str(path.relative_to(root))
+
+
+def upper_slug(value: str) -> str:
+    slug = slugify(value)
+    return slug.replace("-", "_").upper()
+
+
+def doc_filename(topic: str, slug: str, kind: str, doc_date: str) -> str:
+    suffix = "PLAN" if kind == "plan" else "CHANGELOG"
+    return f"{upper_slug(topic)}_{upper_slug(slug)}_{suffix}_{doc_date.replace('-', '_')}.md"
+
+
+def cmd_doc_new(args: argparse.Namespace) -> int:
+    root = repo_root()
+    topic = args.topic or current_topic(root)
+    doc_date = args.date or now_iso()[:10]
+    title = args.title or f"{topic} {args.slug} {args.kind}"
+    directory = root / args.dir if args.dir else root / "docs" / "planning" / slugify(topic)
+    path = directory / doc_filename(topic, args.slug, args.kind, doc_date)
+    if path.exists() and not args.force:
+        print_json({
+            "ok": False,
+            "miss": ["path.exists"],
+            "path": str(path.relative_to(root)),
+            "fix": ["use --force or a new --slug"],
+        })
+        return 1
+
+    template = "small-plan.md" if args.kind == "plan" else "small-changelog.md"
+    text = render_template(
+        template,
+        title=title,
+        topic=topic,
+        slug=args.slug,
+        stage=args.stage or read_state(root).get("st", ""),
+        status=args.status,
+        updated=now_iso(),
+    )
+    write_text(path, text)
+    event = append_event(
+        "doc",
+        kind=args.kind,
+        topic=slugify(topic),
+        slug=slugify(args.slug),
+        path=str(path.relative_to(root)),
+    )
+    print_json({
+        "ok": True,
+        "doc": str(path.relative_to(root)),
+        "kind": args.kind,
+        "event": event["id"],
+    })
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -774,6 +829,20 @@ def build_parser() -> argparse.ArgumentParser:
     hf_sub = p_hf.add_subparsers(dest="hf_cmd", required=True)
     p = hf_sub.add_parser("upd", help="update handoff summary")
     p.set_defaults(func=cmd_hf_upd)
+
+    p_doc = sub.add_parser("doc", help="standalone small plan/changelog docs")
+    doc_sub = p_doc.add_subparsers(dest="doc_cmd", required=True)
+    p = doc_sub.add_parser("new", help="create a standalone small plan or changelog")
+    p.add_argument("--kind", required=True, choices=sorted(DOC_KINDS))
+    p.add_argument("--topic", help="topic directory; defaults to .docops tp")
+    p.add_argument("--slug", required=True, help="short stable slug for filename")
+    p.add_argument("--title", help="document title")
+    p.add_argument("--dir", help="output directory relative to repo root")
+    p.add_argument("--stage")
+    p.add_argument("--status", default="active")
+    p.add_argument("--date", help="YYYY-MM-DD; defaults to today UTC")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_doc_new)
 
     p_ev = sub.add_parser("ev", help="event commands for hooks")
     ev_sub = p_ev.add_subparsers(dest="ev_cmd", required=True)

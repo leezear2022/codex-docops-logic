@@ -34,7 +34,8 @@
     "defaultPrompt": [
       "Initialize DocOps Logic for this project",
       "Show DocOps status and lint reminders",
-      "Log a change and validation"
+      "Log a change and validation",
+      "Create a standalone small plan or changelog"
     ],
     "brandColor": "#2563EB",
     "screenshots": []

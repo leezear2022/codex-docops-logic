@@ -18,8 +18,8 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py st act s03
-python3 codex-docops-logic/scripts/dol.py lint --soft
+python3 "<plugin-root>/scripts/dol.py" st act s03
+python3 "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

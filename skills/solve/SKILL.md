@@ -18,9 +18,9 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py solve --stub --mode check
-python3 codex-docops-logic/scripts/dol.py solve --stub --mode repair
-python3 codex-docops-logic/scripts/solve_stub.py --mode conflict
+python3 "<plugin-root>/scripts/dol.py" solve --stub --mode check
+python3 "<plugin-root>/scripts/dol.py" solve --stub --mode repair
+python3 "<plugin-root>/scripts/solve_stub.py" --mode conflict
 ```
 
 Rules:

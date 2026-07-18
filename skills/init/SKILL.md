@@ -20,9 +20,9 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py init <topic>
-python3 codex-docops-logic/scripts/dol.py status
-python3 codex-docops-logic/scripts/dol.py lint --soft
+python3 "<plugin-root>/scripts/dol.py" init <topic>
+python3 "<plugin-root>/scripts/dol.py" status
+python3 "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

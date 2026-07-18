@@ -36,6 +36,14 @@ CARD_TYPES = {"R", "C", "L", "X", "D", "E", "S", "P", "A", "Q"}
 VA_RESULTS = {"pass", "fail", "mix", "def"}
 SOLVE_MODES = {"check", "repair", "plan", "conflict"}
 DOC_KINDS = {"plan", "changelog"}
+EVENT_TYPES = {"init", "tp", "rm", "st", "pr", "ss", "ch", "va", "rk", "dc", "hf", "ls", "kb", "learn", "prom", "cmd", "doc"}
+STATE_STATUSES = {"active", "blocked", "done", "paused"}
+HEALTH_STATUSES = {"green", "yellow", "red"}
+CARD_STATUSES = {"cand", "acc", "ret", "blk", "pass", "fail", "mix", "def"}
+STAGE_RE = re.compile(r"^s[0-9]{2}$")
+ROADMAP_RE = re.compile(r"^v[0-9]{2}$")
+EVENT_ID_RE = re.compile(r"^ev[0-9]{6}$")
+CARD_ID_RE = re.compile(r"^[RCLXDESPAQ][0-9]{3}$")
 
 
 def now_iso() -> str:
@@ -348,7 +356,7 @@ def long_docs_enabled(root: Path | None = None) -> bool:
 
 def slugify(value: str) -> str:
     value = value.strip().lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value)
+    value = re.sub(r"[^\w]+", "-", value, flags=re.UNICODE).replace("_", "-")
     return value.strip("-") or "item"
 
 
@@ -393,7 +401,42 @@ def upper_slug(value: str) -> str:
 
 def doc_filename(topic: str, slug: str, kind: str, doc_date: str) -> str:
     suffix = "PLAN" if kind == "plan" else "CHANGELOG"
-    return f"{upper_slug(topic)}_{upper_slug(slug)}_{suffix}_{doc_date.replace('-', '_')}.md"
+    topic_slug = slugify(topic)
+    item_slug = slugify(slug)
+    if item_slug == topic_slug:
+        item_slug = ""
+    elif item_slug.startswith(topic_slug + "-"):
+        item_slug = item_slug[len(topic_slug) + 1:]
+    kind_slug = slugify(kind)
+    if item_slug == kind_slug:
+        item_slug = ""
+    elif item_slug.endswith("-" + kind_slug):
+        item_slug = item_slug[: -(len(kind_slug) + 1)]
+    parts = [upper_slug(topic_slug)]
+    if item_slug:
+        parts.append(upper_slug(item_slug))
+    parts.extend([suffix, doc_date.replace("-", "_")])
+    return "_".join(parts) + ".md"
+
+
+def stage_arg(value: str) -> str:
+    if not STAGE_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("stage must match sNN (for example s03)")
+    return value
+
+
+def roadmap_arg(value: str) -> str:
+    if not ROADMAP_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("roadmap must match vNN (for example v02)")
+    return value
+
+
+def date_arg(value: str) -> str:
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("date must be a real YYYY-MM-DD date") from exc
+    return value
 
 
 def cmd_doc_new(args: argparse.Namespace) -> int:
@@ -446,6 +489,127 @@ def cmd_status(args: argparse.Namespace) -> int:
         return 1
     print(render_state(state).strip())
     return 0
+
+
+def validate_workspace(root: Path | None = None) -> dict[str, Any]:
+    root = root or repo_root()
+    errors: list[dict[str, str]] = []
+
+    def issue(path: str, why: str) -> None:
+        errors.append({"path": path, "why": why})
+
+    state = read_state(root)
+    required_state = {"tp", "rm", "st", "stat", "health", "updated"}
+    for key in sorted(required_state - set(state)):
+        issue(".docops/s.md", f"missing state field: {key}")
+    if state.get("rm") and not ROADMAP_RE.fullmatch(state["rm"]):
+        issue(".docops/s.md", "rm must match vNN")
+    if state.get("st") and not STAGE_RE.fullmatch(state["st"]):
+        issue(".docops/s.md", "st must match sNN")
+    if state.get("stat") and state["stat"] not in STATE_STATUSES:
+        issue(".docops/s.md", "invalid stat")
+    if state.get("health") and state["health"] not in HEALTH_STATUSES:
+        issue(".docops/s.md", "invalid health")
+
+    cards_file = card_path(root)
+    if not cards_file.exists():
+        issue(".docops/k.jsonl", "missing knowledge file")
+    try:
+        cards = read_jsonl(cards_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        issue(".docops/k.jsonl", str(exc))
+        cards = []
+    for index, card in enumerate(cards, 1):
+        label = f".docops/k.jsonl:{index}"
+        if not {"id", "ty", "k", "st"}.issubset(card):
+            issue(label, "missing required card field")
+            continue
+        if not CARD_ID_RE.fullmatch(str(card["id"])):
+            issue(label, "invalid card id")
+        if card["ty"] not in CARD_TYPES or not str(card["id"]).startswith(str(card["ty"])):
+            issue(label, "card id/type mismatch")
+        if card["st"] not in CARD_STATUSES:
+            issue(label, "invalid card status")
+        if card.get("sev") is not None and card["sev"] not in {"b", "w", "s", "i"}:
+            issue(label, "invalid card severity")
+        if card.get("conf") is not None and not isinstance(card["conf"], (int, float)):
+            issue(label, "card confidence must be numeric")
+        for key in ["k", "sc", "if", "req", "bad", "seq", "v", "cost"]:
+            if card.get(key) is not None and not isinstance(card[key], str):
+                issue(label, f"card field must be a string: {key}")
+
+    events_file = event_path(root)
+    if not events_file.exists():
+        issue(".docops/ev.jsonl", "missing event file")
+    try:
+        events = read_jsonl(events_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        issue(".docops/ev.jsonl", str(exc))
+        events = []
+    seen_event_ids: set[str] = set()
+    for index, event in enumerate(events, 1):
+        label = f".docops/ev.jsonl:{index}"
+        if not {"id", "ts", "ty"}.issubset(event):
+            issue(label, "missing required event field")
+            continue
+        event_id = str(event["id"])
+        if not EVENT_ID_RE.fullmatch(event_id):
+            issue(label, "invalid event id")
+        if event_id in seen_event_ids:
+            issue(label, "duplicate event id")
+        seen_event_ids.add(event_id)
+        if event["ty"] not in EVENT_TYPES:
+            issue(label, "invalid event type")
+        if event.get("result") is not None and event["result"] not in VA_RESULTS:
+            issue(label, "invalid validation result")
+        if event.get("st") is not None and not STAGE_RE.fullmatch(str(event["st"])):
+            issue(label, "invalid stage")
+        if event.get("rm") is not None and not ROADMAP_RE.fullmatch(str(event["rm"])):
+            issue(label, "invalid roadmap")
+        if event.get("pr") is not None and not isinstance(event["pr"], int):
+            issue(label, "pr must be an integer")
+        if event.get("hist") is not None and not isinstance(event["hist"], bool):
+            issue(label, "hist must be boolean")
+        for key in ["ts", "slug", "action", "cmd", "card"]:
+            if event.get(key) is not None and not isinstance(event[key], str):
+                issue(label, f"event field must be a string: {key}")
+
+    rules_path = docops_dir(root) / "c.yaml"
+    if not rules_path.exists():
+        issue(".docops/c.yaml", "missing constraint file")
+    else:
+        rules = parse_rules(root)
+        if not rules:
+            issue(".docops/c.yaml", "no rules parsed")
+        for rule_id, rule in rules.items():
+            if not re.fullmatch(r"R[0-9]{3}", rule_id):
+                issue(".docops/c.yaml", f"invalid rule id: {rule_id}")
+            if not {"if", "sev"}.issubset(rule):
+                issue(".docops/c.yaml", f"incomplete rule: {rule_id}")
+            if rule.get("sev") not in {"b", "w", "s", "i"}:
+                issue(".docops/c.yaml", f"invalid severity: {rule_id}")
+
+    profile_path = docops_dir(root) / "p.yaml"
+    if not profile_path.exists():
+        issue(".docops/p.yaml", "missing profile file")
+    else:
+        profile_text = read_text(profile_path)
+        if not any(line.strip() == "u:" for line in profile_text.splitlines()):
+            issue(".docops/p.yaml", "missing user profile root")
+        for line in profile_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("tok:"):
+                token_mode = stripped.split(":", 1)[1].strip()
+                if token_mode not in {"low", "med", "high"}:
+                    issue(".docops/p.yaml", "invalid token mode")
+
+    return {"ok": not errors, "errors": errors, "checked": ["s", "c", "k", "ev", "p"]}
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    result = validate_workspace()
+    print_json(result)
+    return 0 if result["ok"] else 1
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -797,22 +961,25 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="print short .docops/s.md state")
     p.set_defaults(func=cmd_status)
 
+    p = sub.add_parser("validate", help="validate .docops files against repository contracts")
+    p.set_defaults(func=cmd_validate)
+
     p_st = sub.add_parser("st", help="stage commands")
     st_sub = p_st.add_subparsers(dest="st_cmd", required=True)
     p = st_sub.add_parser("act", help="activate stage")
-    p.add_argument("stage")
+    p.add_argument("stage", type=stage_arg)
     p.set_defaults(func=cmd_st_act)
 
     p_rm = sub.add_parser("rm", help="roadmap commands")
     rm_sub = p_rm.add_subparsers(dest="rm_cmd", required=True)
     p = rm_sub.add_parser("bump", help="bump roadmap version")
-    p.add_argument("version")
+    p.add_argument("version", type=roadmap_arg)
     p.set_defaults(func=cmd_rm_bump)
 
     p_ch = sub.add_parser("ch", help="change commands")
     ch_sub = p_ch.add_subparsers(dest="ch_cmd", required=True)
     p = ch_sub.add_parser("add", help="add change event")
-    p.add_argument("--stage")
+    p.add_argument("--stage", type=stage_arg)
     p.add_argument("--pr", type=int)
     p.add_argument("--slug")
     p.set_defaults(func=cmd_ch_add)
@@ -820,7 +987,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_va = sub.add_parser("va", help="validation commands")
     va_sub = p_va.add_subparsers(dest="va_cmd", required=True)
     p = va_sub.add_parser("add", help="add validation event")
-    p.add_argument("--stage")
+    p.add_argument("--stage", type=stage_arg)
     p.add_argument("--pr", type=int)
     p.add_argument("--result", choices=sorted(VA_RESULTS), default="pass")
     p.set_defaults(func=cmd_va_add)
@@ -838,9 +1005,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--slug", required=True, help="short stable slug for filename")
     p.add_argument("--title", help="document title")
     p.add_argument("--dir", help="output directory relative to repo root")
-    p.add_argument("--stage")
+    p.add_argument("--stage", type=stage_arg)
     p.add_argument("--status", default="active")
-    p.add_argument("--date", help="YYYY-MM-DD; defaults to today UTC")
+    p.add_argument("--date", type=date_arg, help="YYYY-MM-DD; defaults to today UTC")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_doc_new)
 

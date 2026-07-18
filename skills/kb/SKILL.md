@@ -17,8 +17,8 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py kb add --ty L --k bench.noise --v "repeat benchmark before perf claim"
-python3 codex-docops-logic/scripts/dol.py prom L002
+python3 "<plugin-root>/scripts/dol.py" kb add --ty L --k bench.noise --v "repeat benchmark before perf claim"
+python3 "<plugin-root>/scripts/dol.py" prom L002
 ```
 
 Rules:

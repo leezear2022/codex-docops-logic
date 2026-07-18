@@ -19,9 +19,9 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py va add --stage s03 --pr 128 --result pass
-python3 codex-docops-logic/scripts/dol.py va add --stage s03 --result def
-python3 codex-docops-logic/scripts/dol.py lint --soft
+python3 "<plugin-root>/scripts/dol.py" va add --stage s03 --pr 128 --result pass
+python3 "<plugin-root>/scripts/dol.py" va add --stage s03 --result def
+python3 "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

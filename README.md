@@ -114,6 +114,7 @@ validation. The second passes after `va add` records evidence.
 | `prom` | Accept or retire a candidate card append-only |
 | `hf upd` | Refresh a compact handoff |
 | `doc new` | Create one standalone plan or changelog |
+| `exchange ...` | Cross-agent delivery, audit, response, and closure protocol |
 | `validate` | Validate state and JSONL rows against repository contracts |
 | `lint` | Evaluate deterministic workflow rules |
 | `solve --stub` | Report Phase 1 repair suggestions |
@@ -131,6 +132,64 @@ python3 "$DOCOPS_PLUGIN/scripts/dol.py" doc new \
 
 The default location is `docs/planning/<topic>/`. Existing files are not
 overwritten unless `--force` is supplied.
+
+## Cross-agent exchange (executor -> auditor)
+
+`exchange` is an asynchronous document protocol for two coding agents: one
+executes a task (for example Codex), another audits the real code (for example
+Kimi Code). Documents live in `.docops/exchange/<task-id>/` with one `rNNN/`
+directory per round, so history is append-only and the agents never need to be
+online at the same time. It works in any repository; `init` is not required.
+
+```bash
+DOL="$DOCOPS_PLUGIN/scripts/dol.py"
+
+# 1. create the task (any side, or the user)
+python3 "$DOL" exchange new --id rpc-7004 --title "Fix RPC timeout" \
+  --from user --to codex --acc "timeout retried" --base-commit abc123
+
+# 2. Codex executes, then delivers with evidence
+python3 "$DOL" exchange start rpc-7004
+python3 "$DOL" exchange deliver rpc-7004 --result-commit def456 \
+  --files src/rpc.py --claims "bounded retry with backoff" \
+  --va "python3 -m unittest discover -s tests=pass"
+
+# 3. hand the repo to Kimi Code (see templates/kimi-auditor.md); it reads the
+#    request, reviews the real diff, re-runs the validation, then reports
+python3 "$DOL" exchange audit-start rpc-7004
+python3 "$DOL" exchange audit-submit rpc-7004 --verdict request_changes \
+  --finding "major|src/rpc.py:88|retry unbounded under flood|cap retries at 3"
+
+# 4. Codex answers every finding (accept with a fix, or dispute with evidence)
+python3 "$DOL" exchange respond rpc-7004 --finding F1 \
+  --action accept --note "capped at 3 in def789"
+
+# 5. next round: deliver again (never overwrites round 1), re-audit, approve
+python3 "$DOL" exchange deliver rpc-7004 --result-commit def789 \
+  --files src/rpc.py --claims "cap retries at 3" \
+  --va "python3 -m unittest discover -s tests=pass"
+python3 "$DOL" exchange audit-start rpc-7004
+python3 "$DOL" exchange audit-submit rpc-7004 --verdict approve
+python3 "$DOL" exchange close rpc-7004
+
+# anytime: machine-readable state and consistency checks
+python3 "$DOL" exchange status rpc-7004
+python3 "$DOL" exchange validate --all
+```
+
+Notes:
+
+- This is an asynchronous document protocol, not a real-time message system;
+  the two agents never need to be online at the same time.
+- Git commit hashes are recommended evidence, not strictly required; empty
+  `base_commit`/`result_commit` means "not recorded".
+- Approval requires recorded validation evidence and never replaces the
+  project's own CI or human review.
+- The state machine (`requested -> ... -> approved -> closed`) rejects illegal
+  transitions with actionable errors; there is no `--force` and no way to
+  overwrite a previous round.
+- Kimi Code needs no plugin: `templates/kimi-auditor.md` plus this CLI and the
+  exchange documents are enough to audit.
 
 ## Automatic hooks
 

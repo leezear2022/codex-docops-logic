@@ -13,6 +13,7 @@ import os
 import re
 import sys
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -950,6 +951,687 @@ def cmd_solve(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- cross-agent exchange (executor delivery -> auditor report) -----------
+#
+# Asynchronous document protocol living in .docops/exchange/<task-id>/.
+# Structured fields live in *.json sidecars (stdlib json only); Markdown
+# files carry the human narrative. Every round gets its own rNNN/ directory
+# so history is append-only by construction.
+
+EXCHANGE = "exchange"
+EXCHANGE_STATUSES = [
+    "requested",
+    "in_progress",
+    "ready_for_audit",
+    "auditing",
+    "changes_requested",
+    "disputed",
+    "approved",
+    "closed",
+]
+EXCHANGE_TRANSITIONS = {
+    "requested": {"in_progress", "closed"},
+    "in_progress": {"ready_for_audit", "closed"},
+    "ready_for_audit": {"auditing"},
+    "auditing": {"approved", "changes_requested"},
+    "changes_requested": {"changes_requested", "disputed", "ready_for_audit"},
+    "disputed": {"disputed", "ready_for_audit"},
+    "approved": {"closed"},
+    "closed": set(),
+}
+EXCHANGE_DOC_TYPES = {"request", "delivery", "audit", "response", "closure"}
+EXCHANGE_REQUIRED = {
+    "request": ["doc", "type", "task", "round", "from", "to", "executor", "auditor", "ts", "title", "request", "scope", "acceptance", "base_commit"],
+    "delivery": ["doc", "type", "task", "round", "from", "to", "ts", "base_commit", "result_commit", "changed_files", "claims", "validation", "limitations", "risks", "open_questions"],
+    "audit": ["doc", "type", "task", "round", "from", "to", "ts", "verdict", "delivery", "findings", "summary"],
+    "response": ["doc", "type", "task", "round", "from", "to", "ts", "audit", "responses"],
+    "closure": ["doc", "type", "task", "round", "from", "ts", "resolution", "approved_round", "note"],
+}
+EXCHANGE_STATE_REQUIRED = ["task", "title", "status", "round", "executor", "auditor", "approved_round", "docs", "created", "updated"]
+FINDING_SEVERITIES = {"blocker", "major", "minor", "info"}
+AUDIT_VERDICTS = {"approve", "request_changes"}
+RESPONSE_ACTIONS = {"accept", "dispute"}
+EXCHANGE_VA_RESULTS = {"pass", "fail", "mix"}
+CLOSURE_RESOLUTIONS = {"approved", "cancelled"}
+TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+ROUND_RE = re.compile(r"^r[0-9]{3}$")
+MAX_FIELD = 8192
+
+
+class ExchangeError(Exception):
+    """Actionable exchange protocol failure."""
+
+    def __init__(self, why: str, miss: list[str] | None = None, fix: list[str] | None = None):
+        super().__init__(why)
+        self.why = why
+        self.miss = miss or []
+        self.fix = fix or []
+
+
+def clip(value: str) -> str:
+    value = str(value)
+    return value if len(value) <= MAX_FIELD else value[:MAX_FIELD] + "...(truncated)"
+
+
+def exchange_root(root: Path | None = None) -> Path:
+    return docops_dir(root) / EXCHANGE
+
+
+def task_path(task_id: str, root: Path | None = None) -> Path:
+    base = exchange_root(root).resolve()
+    path = (base / task_id).resolve()
+    if path.parent != base:
+        raise ExchangeError("task id escapes the exchange directory", miss=[task_id])
+    return path
+
+
+def task_id_arg(value: str) -> str:
+    if not TASK_ID_RE.fullmatch(value):
+        raise argparse.ArgumentTypeError("task id must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    return value
+
+
+def write_file_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_json_atomic(path: Path, obj: dict[str, Any]) -> None:
+    write_file_atomic(path, json.dumps(obj, ensure_ascii=False, indent=2) + "\n")
+
+
+@contextmanager
+def task_lock(tdir: Path):
+    lock = tdir / ".lock"
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise ExchangeError(
+            "task is locked by another writer",
+            miss=[str(lock)],
+            fix=["retry in a few seconds; delete a stale .lock only if no writer is active"],
+        ) from exc
+    os.write(fd, f"{os.getpid()} {now_iso()}\n".encode("utf-8"))
+    os.close(fd)
+    try:
+        yield
+    finally:
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def read_task_state(tdir: Path) -> dict[str, Any]:
+    path = tdir / "state.json"
+    if not path.is_file():
+        raise ExchangeError("exchange task not found", miss=[str(path)], fix=["dol exchange new --id <task> ..."])
+    try:
+        return json.loads(read_text(path))
+    except json.JSONDecodeError as exc:
+        raise ExchangeError(f"corrupt state.json: {exc}", miss=[str(path)]) from exc
+
+
+def write_task_state(tdir: Path, state: dict[str, Any]) -> None:
+    state["updated"] = now_iso()
+    state["rev"] = int(state.get("rev", 0)) + 1
+    write_json_atomic(tdir / "state.json", state)
+
+
+def transition(state: dict[str, Any], target: str) -> None:
+    current = state.get("status", "")
+    if target not in EXCHANGE_TRANSITIONS.get(current, set()):
+        allowed = sorted(EXCHANGE_TRANSITIONS.get(current, set()))
+        raise ExchangeError(
+            f"illegal transition {current} -> {target}",
+            miss=[f"status:{current}"],
+            fix=[f"allowed targets from {current}: {allowed or 'none (terminal state)'}"],
+        )
+    state["status"] = target
+
+
+def doc_sidecar(tdir: Path, doc_id: str, ext: str) -> Path | None:
+    parts = doc_id.split("/")
+    if len(parts) == 2 and parts[1] in {"request", "closure"}:
+        return tdir / f"{parts[1]}.{ext}"
+    if len(parts) == 3 and ROUND_RE.fullmatch(parts[1]) and parts[2] in {"delivery", "audit", "response"}:
+        return tdir / parts[1] / f"{parts[2]}.{ext}"
+    return None
+
+
+def write_exchange_doc(tdir: Path, state: dict[str, Any], doc_type: str, rnd: int,
+                       meta: dict[str, Any], md_text: str, extend: bool = False) -> None:
+    json_path = doc_sidecar(tdir, meta["doc"], "json")
+    md_path = doc_sidecar(tdir, meta["doc"], "md")
+    assert json_path is not None and md_path is not None
+    if not extend and (json_path.exists() or md_path.exists()):
+        raise ExchangeError(
+            "document already exists; exchange history is append-only",
+            miss=[str(json_path)],
+            fix=["open a new round with dol exchange deliver"],
+        )
+    write_json_atomic(json_path, meta)
+    write_file_atomic(md_path, md_text)
+    if meta["doc"] not in state["docs"]:
+        state["docs"].append(meta["doc"])
+
+
+def md_list(items: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in items) if items else "- (none)"
+
+
+def parse_va(entries: list[str]) -> list[dict[str, str]]:
+    va: list[dict[str, str]] = []
+    for entry in entries or []:
+        if "=" not in entry:
+            raise ExchangeError(
+                "validation must be 'cmd=result'",
+                miss=[entry],
+                fix=["--va 'python3 -m unittest discover -s tests=pass'"],
+            )
+        command, result = entry.rsplit("=", 1)
+        result = result.strip()
+        if result not in EXCHANGE_VA_RESULTS:
+            raise ExchangeError(f"invalid validation result: {result}", fix=[f"use one of {sorted(EXCHANGE_VA_RESULTS)}"])
+        va.append({"cmd": clip(command.strip()), "result": result})
+    return va
+
+
+def parse_findings(specs: list[str]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for index, spec in enumerate(specs or [], 1):
+        parts = [part.strip() for part in spec.split("|", 3)]
+        if len(parts) != 4:
+            raise ExchangeError("finding must be 'severity|path|evidence|advice'", miss=[spec])
+        severity, fpath, evidence, advice = parts
+        if severity not in FINDING_SEVERITIES:
+            raise ExchangeError(f"invalid severity: {severity}", fix=[f"use one of {sorted(FINDING_SEVERITIES)}"])
+        findings.append({
+            "id": f"F{index}",
+            "severity": severity,
+            "path": clip(fpath),
+            "evidence": clip(evidence),
+            "advice": clip(advice),
+        })
+    return findings
+
+
+def render_findings_md(findings: list[dict[str, str]]) -> str:
+    if not findings:
+        return "(no findings)"
+    blocks = []
+    for finding in findings:
+        blocks.append(
+            f"### {finding['id']} [{finding['severity']}] {finding['path']}\n\n"
+            f"- evidence: {finding['evidence']}\n"
+            f"- advice: {finding['advice']}"
+        )
+    return "\n\n".join(blocks)
+
+
+def render_response_doc(meta: dict[str, Any]) -> str:
+    lines = "\n".join(
+        f"- {item['finding']}: {item['action']}; {item['note']} ({item['ts']})"
+        for item in meta["responses"]
+    )
+    return render_template(
+        "exchange-response.md",
+        doc=meta["doc"],
+        round=str(meta["round"]),
+        audit=meta["audit"],
+        from_agent=meta["from"],
+        to_agent=meta["to"],
+        ts=meta["ts"],
+        responses=lines,
+    )
+
+
+def cmd_exchange_new(args: argparse.Namespace) -> int:
+    root = repo_root()
+    tdir = task_path(args.id, root)
+    if tdir.exists():
+        raise ExchangeError("task already exists", miss=[str(tdir)], fix=["choose another --id"])
+    request_text = clip(args.request)
+    if args.request_file:
+        rfile = Path(args.request_file)
+        if not rfile.is_file():
+            raise ExchangeError("request file not found", miss=[args.request_file])
+        request_text = clip(read_text(rfile))
+    tdir.mkdir(parents=True)
+    ts = now_iso()
+    state: dict[str, Any] = {
+        "task": args.id,
+        "title": clip(args.title),
+        "status": "requested",
+        "round": 0,
+        "executor": args.executor,
+        "auditor": args.auditor,
+        "approved_round": None,
+        "docs": [],
+        "rev": 0,
+        "created": ts,
+        "updated": ts,
+    }
+    meta = {
+        "doc": f"{args.id}/request",
+        "type": "request",
+        "task": args.id,
+        "round": 0,
+        "from": args.from_agent,
+        "to": args.to_agent,
+        "executor": args.executor,
+        "auditor": args.auditor,
+        "ts": ts,
+        "title": clip(args.title),
+        "request": request_text,
+        "scope": clip(args.scope),
+        "acceptance": [clip(item) for item in args.acc],
+        "base_commit": args.base_commit,
+    }
+    body = render_template(
+        "exchange-request.md",
+        title=meta["title"],
+        task=args.id,
+        doc=meta["doc"],
+        from_agent=meta["from"],
+        to_agent=meta["to"],
+        executor=meta["executor"],
+        auditor=meta["auditor"],
+        base_commit=meta["base_commit"] or "(not recorded)",
+        ts=ts,
+        request=meta["request"] or "(see conversation)",
+        scope=meta["scope"] or "(unspecified)",
+        acceptance=md_list(meta["acceptance"]),
+    )
+    with task_lock(tdir):
+        write_exchange_doc(tdir, state, "request", 0, meta, body)
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.id, "status": "requested", "doc": meta["doc"]})
+    return 0
+
+
+def cmd_exchange_start(args: argparse.Namespace) -> int:
+    tdir = task_path(args.task, repo_root())
+    with task_lock(tdir):
+        state = read_task_state(tdir)
+        transition(state, "in_progress")
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.task, "status": "in_progress"})
+    return 0
+
+
+def cmd_exchange_deliver(args: argparse.Namespace) -> int:
+    tdir = task_path(args.task, repo_root())
+    files = [item.strip() for item in args.files.split(",") if item.strip()]
+    va = parse_va(args.va)
+    with task_lock(tdir):
+        state = read_task_state(tdir)
+        transition(state, "ready_for_audit")
+        rnd = int(state["round"]) + 1
+        meta = {
+            "doc": f"{args.task}/r{rnd:03d}/delivery",
+            "type": "delivery",
+            "task": args.task,
+            "round": rnd,
+            "from": state["executor"],
+            "to": state["auditor"],
+            "ts": now_iso(),
+            "base_commit": args.base_commit,
+            "result_commit": args.result_commit,
+            "changed_files": files,
+            "claims": [clip(item) for item in args.claims],
+            "validation": va,
+            "limitations": [clip(item) for item in args.limits],
+            "risks": [clip(item) for item in args.risks],
+            "open_questions": [clip(item) for item in args.question],
+        }
+        va_lines = "\n".join(f"- `{v['cmd']}` -> {v['result']}" for v in va) or "- (none recorded)"
+        body = render_template(
+            "exchange-delivery.md",
+            doc=meta["doc"],
+            round=str(rnd),
+            from_agent=meta["from"],
+            to_agent=meta["to"],
+            base_commit=meta["base_commit"] or "(not recorded)",
+            result_commit=meta["result_commit"] or "(not recorded)",
+            ts=meta["ts"],
+            changed_files=md_list(files),
+            claims=md_list(meta["claims"]),
+            validation=va_lines,
+            limitations=md_list(meta["limitations"]),
+            risks=md_list(meta["risks"]),
+            open_questions=md_list(meta["open_questions"]),
+        )
+        write_exchange_doc(tdir, state, "delivery", rnd, meta, body)
+        state["round"] = rnd
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.task, "status": "ready_for_audit", "round": rnd, "doc": meta["doc"]})
+    return 0
+
+
+def cmd_exchange_audit_start(args: argparse.Namespace) -> int:
+    tdir = task_path(args.task, repo_root())
+    with task_lock(tdir):
+        state = read_task_state(tdir)
+        if int(state.get("round", 0)) < 1:
+            raise ExchangeError("no delivery to audit", fix=[f"dol exchange deliver {args.task} ..."])
+        transition(state, "auditing")
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.task, "status": "auditing", "round": state["round"]})
+    return 0
+
+
+def cmd_exchange_audit_submit(args: argparse.Namespace) -> int:
+    tdir = task_path(args.task, repo_root())
+    findings = parse_findings(args.finding)
+    with task_lock(tdir):
+        state = read_task_state(tdir)
+        if state.get("status") != "auditing":
+            raise ExchangeError(
+                f"cannot submit an audit from status {state.get('status')}",
+                fix=[f"dol exchange audit-start {args.task}"],
+            )
+        rnd = int(state["round"])
+        delivery_path = tdir / f"r{rnd:03d}" / "delivery.json"
+        if not delivery_path.is_file():
+            raise ExchangeError("no delivery for the current round", miss=[str(delivery_path)])
+        delivery = json.loads(read_text(delivery_path))
+        if args.verdict == "approve" and not delivery.get("validation"):
+            raise ExchangeError(
+                "approve requires recorded validation evidence",
+                miss=["delivery.validation"],
+                fix=["use --verdict request_changes, or redeliver with --va cmd=result"],
+            )
+        if args.verdict == "request_changes" and not findings:
+            raise ExchangeError(
+                "request_changes requires at least one --finding",
+                fix=["--finding 'severity|path|evidence|advice'"],
+            )
+        meta = {
+            "doc": f"{args.task}/r{rnd:03d}/audit",
+            "type": "audit",
+            "task": args.task,
+            "round": rnd,
+            "from": state["auditor"],
+            "to": state["executor"],
+            "ts": now_iso(),
+            "verdict": args.verdict,
+            "delivery": delivery["doc"],
+            "findings": findings,
+            "summary": clip(args.summary),
+        }
+        body = render_template(
+            "exchange-audit.md",
+            doc=meta["doc"],
+            round=str(rnd),
+            delivery=meta["delivery"],
+            verdict=args.verdict,
+            from_agent=meta["from"],
+            to_agent=meta["to"],
+            ts=meta["ts"],
+            findings=render_findings_md(findings),
+            summary=meta["summary"] or "(none)",
+        )
+        target = "approved" if args.verdict == "approve" else "changes_requested"
+        transition(state, target)
+        if target == "approved":
+            state["approved_round"] = rnd
+        write_exchange_doc(tdir, state, "audit", rnd, meta, body)
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.task, "status": target, "round": rnd, "doc": meta["doc"], "findings": len(findings)})
+    return 0
+
+
+def cmd_exchange_respond(args: argparse.Namespace) -> int:
+    tdir = task_path(args.task, repo_root())
+    with task_lock(tdir):
+        state = read_task_state(tdir)
+        if state.get("status") not in {"changes_requested", "disputed"}:
+            raise ExchangeError(
+                f"cannot respond from status {state.get('status')}",
+                fix=["responses are only allowed after an audit requested changes"],
+            )
+        rnd = int(state["round"])
+        audit_path = tdir / f"r{rnd:03d}" / "audit.json"
+        if not audit_path.is_file():
+            raise ExchangeError("no audit for the current round", miss=[str(audit_path)])
+        audit = json.loads(read_text(audit_path))
+        known = {finding["id"] for finding in audit.get("findings", [])}
+        if args.finding not in known:
+            raise ExchangeError(f"unknown finding: {args.finding}", fix=[f"known findings: {sorted(known)}"])
+        resp_path = tdir / f"r{rnd:03d}" / "response.json"
+        if resp_path.exists():
+            meta = json.loads(read_text(resp_path))
+        else:
+            meta = {
+                "doc": f"{args.task}/r{rnd:03d}/response",
+                "type": "response",
+                "task": args.task,
+                "round": rnd,
+                "from": state["executor"],
+                "to": state["auditor"],
+                "ts": now_iso(),
+                "audit": audit["doc"],
+                "responses": [],
+            }
+        meta["responses"].append({
+            "finding": args.finding,
+            "action": args.action,
+            "note": clip(args.note),
+            "ts": now_iso(),
+        })
+        write_exchange_doc(tdir, state, "response", rnd, meta, render_response_doc(meta), extend=True)
+        transition(state, "disputed" if args.action == "dispute" else state["status"])
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.task, "status": state["status"], "doc": meta["doc"], "responses": len(meta["responses"])})
+    return 0
+
+
+def cmd_exchange_close(args: argparse.Namespace) -> int:
+    tdir = task_path(args.task, repo_root())
+    with task_lock(tdir):
+        state = read_task_state(tdir)
+        resolution = "approved" if state.get("status") == "approved" else "cancelled"
+        transition(state, "closed")
+        meta = {
+            "doc": f"{args.task}/closure",
+            "type": "closure",
+            "task": args.task,
+            "round": int(state["round"]),
+            "from": state["executor"],
+            "ts": now_iso(),
+            "resolution": resolution,
+            "approved_round": state.get("approved_round"),
+            "note": clip(args.note),
+        }
+        body = render_template(
+            "exchange-closure.md",
+            doc=meta["doc"],
+            resolution=resolution,
+            approved_round=str(meta["approved_round"] if meta["approved_round"] is not None else "-"),
+            from_agent=meta["from"],
+            ts=meta["ts"],
+            note=meta["note"] or "(none)",
+        )
+        write_exchange_doc(tdir, state, "closure", int(state["round"]), meta, body)
+        write_task_state(tdir, state)
+    print_json({"ok": True, "task": args.task, "status": "closed", "resolution": resolution, "doc": meta["doc"]})
+    return 0
+
+
+def cmd_exchange_status(args: argparse.Namespace) -> int:
+    root = repo_root()
+    if args.task:
+        print_json(read_task_state(task_path(args.task, root)))
+        return 0
+    base = exchange_root(root)
+    tasks: list[dict[str, Any]] = []
+    if base.exists():
+        for path in sorted(base.glob("*")):
+            state_path = path / "state.json"
+            if not state_path.is_file():
+                continue
+            try:
+                state = json.loads(read_text(state_path))
+            except json.JSONDecodeError:
+                tasks.append({"task": path.name, "status": "corrupt"})
+                continue
+            tasks.append({
+                "task": state.get("task", path.name),
+                "status": state.get("status"),
+                "round": state.get("round"),
+                "updated": state.get("updated"),
+            })
+    print_json({"ok": True, "tasks": tasks})
+    return 0
+
+
+def validate_exchange(root: Path | None = None, task_id: str | None = None) -> dict[str, Any]:
+    root = root or repo_root()
+    errors: list[dict[str, str]] = []
+
+    def issue(path: Any, why: str) -> None:
+        errors.append({"path": str(path), "why": why})
+
+    base = exchange_root(root)
+    if task_id:
+        if not TASK_ID_RE.fullmatch(task_id):
+            issue(base / task_id, "invalid task id")
+            return {"ok": False, "errors": errors, "tasks": 0}
+        names = [task_id]
+    elif base.exists():
+        names = sorted(path.name for path in base.glob("*") if (path / "state.json").is_file())
+    else:
+        names = []
+
+    for name in names:
+        tdir = base / name
+        state_path = tdir / "state.json"
+        if not state_path.is_file():
+            issue(state_path, "missing state.json")
+            continue
+        try:
+            state = json.loads(read_text(state_path))
+        except json.JSONDecodeError as exc:
+            issue(state_path, f"invalid json: {exc}")
+            continue
+        for key in EXCHANGE_STATE_REQUIRED:
+            if key not in state:
+                issue(state_path, f"missing state field: {key}")
+        status = state.get("status")
+        if status not in EXCHANGE_STATUSES:
+            issue(state_path, f"invalid status: {status}")
+        if not isinstance(state.get("round"), int) or state["round"] < 0:
+            issue(state_path, "round must be a non-negative integer")
+        docs = state.get("docs", [])
+        if not isinstance(docs, list) or len(docs) != len(set(docs)):
+            issue(state_path, "doc index must be a list of unique ids")
+            docs = []
+        if f"{name}/request" not in docs:
+            issue(state_path, "missing request doc in index")
+
+        deliveries: dict[int, dict[str, Any]] = {}
+        audits: dict[int, dict[str, Any]] = {}
+        responses: dict[int, dict[str, Any]] = {}
+        for doc_id in docs:
+            if not isinstance(doc_id, str) or not doc_id.startswith(name + "/"):
+                issue(state_path, f"doc id outside task: {doc_id}")
+                continue
+            json_path = doc_sidecar(tdir, doc_id, "json")
+            md_path = doc_sidecar(tdir, doc_id, "md")
+            if json_path is None or md_path is None:
+                issue(state_path, f"malformed doc id: {doc_id}")
+                continue
+            if not json_path.is_file():
+                issue(json_path, "missing doc sidecar")
+                continue
+            if not md_path.is_file():
+                issue(md_path, "missing doc markdown")
+            try:
+                meta = json.loads(read_text(json_path))
+            except json.JSONDecodeError as exc:
+                issue(json_path, f"invalid json: {exc}")
+                continue
+            dtype = meta.get("type")
+            if dtype not in EXCHANGE_DOC_TYPES:
+                issue(json_path, f"invalid doc type: {dtype}")
+                continue
+            if meta.get("doc") != doc_id:
+                issue(json_path, "doc field does not match the index id")
+            for key in EXCHANGE_REQUIRED[dtype]:
+                if key not in meta:
+                    issue(json_path, f"missing field: {key}")
+            parts = doc_id.split("/")
+            if len(parts) == 3 and meta.get("round") != int(parts[1][1:]):
+                issue(json_path, "round does not match the round directory")
+            if dtype == "request" and meta.get("round") != 0:
+                issue(json_path, "request round must be 0")
+            if dtype == "delivery":
+                deliveries[int(meta.get("round", -1))] = meta
+                for va in meta.get("validation", []):
+                    if va.get("result") not in EXCHANGE_VA_RESULTS:
+                        issue(json_path, f"invalid validation result: {va.get('result')}")
+            elif dtype == "audit":
+                audits[int(meta.get("round", -1))] = meta
+                if meta.get("verdict") not in AUDIT_VERDICTS:
+                    issue(json_path, f"invalid verdict: {meta.get('verdict')}")
+                for finding in meta.get("findings", []):
+                    for key in ["id", "severity", "path", "evidence", "advice"]:
+                        if key not in finding:
+                            issue(json_path, f"finding missing field: {key}")
+                    if finding.get("severity") not in FINDING_SEVERITIES:
+                        issue(json_path, f"invalid finding severity: {finding.get('severity')}")
+            elif dtype == "response":
+                responses[int(meta.get("round", -1))] = meta
+            elif dtype == "closure" and meta.get("resolution") not in CLOSURE_RESOLUTIONS:
+                issue(json_path, f"invalid closure resolution: {meta.get('resolution')}")
+
+        for rnd, audit in audits.items():
+            delivery = deliveries.get(rnd)
+            if delivery is None:
+                issue(tdir / f"r{rnd:03d}" / "audit.json", "audit without a delivery in the same round")
+                continue
+            if str(delivery.get("ts", "")) > str(audit.get("ts", "")):
+                issue(tdir / f"r{rnd:03d}" / "audit.json", "audit predates its delivery")
+            if audit.get("delivery") != delivery.get("doc"):
+                issue(tdir / f"r{rnd:03d}" / "audit.json", "audit does not reference the round delivery")
+            if audit.get("verdict") == "approve" and not delivery.get("validation"):
+                issue(tdir / f"r{rnd:03d}" / "audit.json", "approved without validation evidence")
+        for rnd, response in responses.items():
+            audit = audits.get(rnd)
+            if audit is None:
+                issue(tdir / f"r{rnd:03d}" / "response.json", "response without an audit in the same round")
+                continue
+            if response.get("audit") != audit.get("doc"):
+                issue(tdir / f"r{rnd:03d}" / "response.json", "response does not reference the round audit")
+            known = {finding.get("id") for finding in audit.get("findings", [])}
+            for item in response.get("responses", []):
+                if item.get("finding") not in known:
+                    issue(tdir / f"r{rnd:03d}" / "response.json", f"unknown finding: {item.get('finding')}")
+                if item.get("action") not in RESPONSE_ACTIONS:
+                    issue(tdir / f"r{rnd:03d}" / "response.json", f"invalid response action: {item.get('action')}")
+
+        current_round = state.get("round", 0)
+        if status == "approved":
+            approved_round = state.get("approved_round")
+            if not isinstance(approved_round, int) or audits.get(approved_round, {}).get("verdict") != "approve":
+                issue(state_path, "approved without a matching approve audit round")
+        if status == "changes_requested" and audits.get(current_round, {}).get("verdict") != "request_changes":
+            issue(state_path, "changes_requested without a request_changes audit in the current round")
+        if status == "closed" and f"{name}/closure" not in docs:
+            issue(state_path, "closed without a closure doc")
+
+    return {"ok": not errors, "errors": errors, "tasks": len(names)}
+
+
+def cmd_exchange_validate(args: argparse.Namespace) -> int:
+    result = validate_exchange(repo_root(), args.task if args.task else None)
+    print_json(result)
+    return 0 if result["ok"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="dol", description="DocOps Logic Phase 1 CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1045,6 +1727,71 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mode", choices=sorted(SOLVE_MODES), default="check")
     p.set_defaults(func=cmd_solve)
 
+    p_x = sub.add_parser("exchange", help="cross-agent delivery and audit protocol")
+    x_sub = p_x.add_subparsers(dest="x_cmd", required=True)
+
+    p = x_sub.add_parser("new", help="create an exchange task and request doc")
+    p.add_argument("--id", required=True, type=task_id_arg)
+    p.add_argument("--title", required=True)
+    p.add_argument("--from", dest="from_agent", required=True)
+    p.add_argument("--to", dest="to_agent", required=True)
+    p.add_argument("--executor", default="codex")
+    p.add_argument("--auditor", default="kimi")
+    p.add_argument("--base-commit", default="")
+    p.add_argument("--request", default="")
+    p.add_argument("--request-file")
+    p.add_argument("--scope", default="")
+    p.add_argument("--acc", action="append", default=[], help="acceptance criterion; repeatable")
+    p.set_defaults(func=cmd_exchange_new)
+
+    p = x_sub.add_parser("start", help="mark a task in progress")
+    p.add_argument("task", type=task_id_arg)
+    p.set_defaults(func=cmd_exchange_start)
+
+    p = x_sub.add_parser("deliver", help="submit an executor delivery for the next round")
+    p.add_argument("task", type=task_id_arg)
+    p.add_argument("--result-commit", default="")
+    p.add_argument("--base-commit", default="")
+    p.add_argument("--files", default="", help="comma-separated changed files")
+    p.add_argument("--claims", action="append", default=[])
+    p.add_argument("--va", action="append", default=[], help="'cmd=result' with result in pass|fail|mix")
+    p.add_argument("--limits", action="append", default=[])
+    p.add_argument("--risks", action="append", default=[])
+    p.add_argument("--question", action="append", default=[])
+    p.set_defaults(func=cmd_exchange_deliver)
+
+    p = x_sub.add_parser("audit-start", help="begin auditing the current round")
+    p.add_argument("task", type=task_id_arg)
+    p.set_defaults(func=cmd_exchange_audit_start)
+
+    p = x_sub.add_parser("audit-submit", help="submit an audit report for the current round")
+    p.add_argument("task", type=task_id_arg)
+    p.add_argument("--verdict", required=True, choices=sorted(AUDIT_VERDICTS))
+    p.add_argument("--finding", action="append", default=[], help="'severity|path|evidence|advice'; repeatable")
+    p.add_argument("--summary", default="")
+    p.set_defaults(func=cmd_exchange_audit_submit)
+
+    p = x_sub.add_parser("respond", help="respond to one audit finding")
+    p.add_argument("task", type=task_id_arg)
+    p.add_argument("--finding", required=True)
+    p.add_argument("--action", required=True, choices=sorted(RESPONSE_ACTIONS))
+    p.add_argument("--note", default="")
+    p.set_defaults(func=cmd_exchange_respond)
+
+    p = x_sub.add_parser("close", help="close an approved task or cancel an unstarted one")
+    p.add_argument("task", type=task_id_arg)
+    p.add_argument("--note", default="")
+    p.set_defaults(func=cmd_exchange_close)
+
+    p = x_sub.add_parser("status", help="show one task or list all exchange tasks")
+    p.add_argument("task", nargs="?", type=task_id_arg)
+    p.set_defaults(func=cmd_exchange_status)
+
+    p = x_sub.add_parser("validate", help="validate exchange docs and the state machine")
+    p.add_argument("task", nargs="?", type=task_id_arg)
+    p.add_argument("--all", action="store_true")
+    p.set_defaults(func=cmd_exchange_validate)
+
     return parser
 
 
@@ -1053,6 +1800,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
+    except ExchangeError as exc:
+        print_json({"ok": False, "miss": exc.miss, "why": exc.why, "fix": exc.fix})
+        return 1
     except FileNotFoundError as exc:
         print_json({"ok": False, "miss": [str(exc.filename)], "fix": ["dol init <topic>"]})
         return 1

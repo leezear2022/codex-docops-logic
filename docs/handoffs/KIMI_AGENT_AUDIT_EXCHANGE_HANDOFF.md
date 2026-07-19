@@ -137,3 +137,63 @@ finding 拒答、篡改检测、schema↔validator 契约一致、中文标题�
 - `schemas/exchange.schema.json` 与 `EXCHANGE_REQUIRED` 的镜像是否完备,
   契约测试是否真的防回归。
 - README 示例与 `templates/kimi-auditor.md` 的命令是否与实际 CLI 一致。
+
+---
+
+## Round 2: fixes for Codex audit (request_changes, 5 major findings)
+
+Round-1 handoff is above, unchanged. This section is appended after the Codex
+audit; the fixes live in a follow-up commit on the same branch.
+
+- **F1 (approve gates) — fixed.** `audit-submit --verdict approve` now rejects
+  any `fail`/`mix` validation entry and any `blocker`/`major` finding (minor/
+  info allowed). New validation result `not_applicable` for steps that
+  genuinely do not apply (reason goes in the cmd text), per the auditor's
+  suggestion; the approval gate itself stays.
+- **F2 (per-finding closure) — fixed.** `respond` requires a non-empty
+  `--note`; each finding accepts exactly one response; `deliver` refuses a new
+  round while any finding of the current audit is unanswered (error lists the
+  missing finding ids).
+- **F3 (validate robustness) — fixed.** `validate` now: flags orphan task
+  directories without `state.json`; cross-checks disk sidecars against the
+  state index in both directions; verifies `md_sha256` so Markdown edits after
+  writing are detected; type-guards every field (a non-integer `round`
+  produces a structured error, never a traceback); enforces per-status
+  invariants (`requested` must be round 0; `ready_for_audit` and beyond
+  require a delivery in the current round; approve-consistency rules mirror
+  the new F1 gates).
+- **F4 (append-only responses) — fixed.** Responses are now one immutable
+  document per finding: `rNNN/response-F<n>.json/.md`. No in-place rewrites
+  remain anywhere in the protocol; JSON+MD are both written atomically and any
+  crash between them is caught by validate (missing counterpart / hash
+  mismatch).
+- **F5 (plugin version) — partially fixed.** `plugin.json` bumped to
+  `0.2.0+codex.20260718140000`. Per the task constraints the installed plugin
+  cache under `~/.codex` / marketplaces was **not** touched; the user must
+  re-run `codex plugin add docops-logic@personal` (and re-trust hooks) for the
+  installed copy to expose `docops-exchange`.
+
+Contract updates: `schemas/exchange.schema.json` mirrors the new
+`EXCHANGE_REQUIRED` (incl. `md_sha256`) and the `not_applicable` enum; the
+schema↔validator contract test covers this. `templates/exchange-response.md`,
+`templates/kimi-auditor.md`, `skills/xchange/SKILL.md`, and README notes were
+updated to the new rules.
+
+Verification on the fix commit:
+
+- `python3 -m unittest discover -s tests`: **Ran 40 tests — OK** (18 legacy +
+  22 exchange; 8 new tests for F1–F3 gates and tamper detection)
+- `python3 -m py_compile scripts/*.py hooks/*.py`: OK
+- `git diff --check`: OK
+- End-to-end smoke: unanswered finding blocks round 2 with `miss:["F2"]`;
+  tampered `request.md` fails validate with "markdown hash mismatch";
+  per-finding `response-F1/F2` documents are immutable and validated.
+
+Open for re-audit:
+
+- Whether `not_applicable` should carry a separate structured `reason` field
+  instead of embedding the reason in `cmd` (kept simple for now).
+- Crash between the JSON and Markdown atomic writes is detectable but not
+  self-healing (documented limitation).
+- Installed-plugin refresh (F5) is a user action; not verifiable from this
+  repo.

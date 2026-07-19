@@ -8,6 +8,7 @@ directory and keeps JSONL records append-only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -981,20 +982,23 @@ EXCHANGE_TRANSITIONS = {
 }
 EXCHANGE_DOC_TYPES = {"request", "delivery", "audit", "response", "closure"}
 EXCHANGE_REQUIRED = {
-    "request": ["doc", "type", "task", "round", "from", "to", "executor", "auditor", "ts", "title", "request", "scope", "acceptance", "base_commit"],
-    "delivery": ["doc", "type", "task", "round", "from", "to", "ts", "base_commit", "result_commit", "changed_files", "claims", "validation", "limitations", "risks", "open_questions"],
-    "audit": ["doc", "type", "task", "round", "from", "to", "ts", "verdict", "delivery", "findings", "summary"],
-    "response": ["doc", "type", "task", "round", "from", "to", "ts", "audit", "responses"],
-    "closure": ["doc", "type", "task", "round", "from", "ts", "resolution", "approved_round", "note"],
+    "request": ["doc", "type", "task", "round", "from", "to", "executor", "auditor", "ts", "title", "request", "scope", "acceptance", "base_commit", "md_sha256"],
+    "delivery": ["doc", "type", "task", "round", "from", "to", "ts", "base_commit", "result_commit", "changed_files", "claims", "validation", "limitations", "risks", "open_questions", "md_sha256"],
+    "audit": ["doc", "type", "task", "round", "from", "to", "ts", "verdict", "delivery", "findings", "summary", "md_sha256"],
+    "response": ["doc", "type", "task", "round", "from", "to", "ts", "audit", "finding", "action", "note", "md_sha256"],
+    "closure": ["doc", "type", "task", "round", "from", "ts", "resolution", "approved_round", "note", "md_sha256"],
 }
 EXCHANGE_STATE_REQUIRED = ["task", "title", "status", "round", "executor", "auditor", "approved_round", "docs", "created", "updated"]
 FINDING_SEVERITIES = {"blocker", "major", "minor", "info"}
+BLOCKING_SEVERITIES = {"blocker", "major"}
 AUDIT_VERDICTS = {"approve", "request_changes"}
 RESPONSE_ACTIONS = {"accept", "dispute"}
-EXCHANGE_VA_RESULTS = {"pass", "fail", "mix"}
+EXCHANGE_VA_RESULTS = {"pass", "fail", "mix", "not_applicable"}
+FAILED_VA_RESULTS = {"fail", "mix"}
 CLOSURE_RESOLUTIONS = {"approved", "cancelled"}
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ROUND_RE = re.compile(r"^r[0-9]{3}$")
+RESPONSE_DOC_RE = re.compile(r"^response-F[0-9]+$")
 MAX_FIELD = 8192
 
 
@@ -1096,22 +1100,25 @@ def doc_sidecar(tdir: Path, doc_id: str, ext: str) -> Path | None:
     parts = doc_id.split("/")
     if len(parts) == 2 and parts[1] in {"request", "closure"}:
         return tdir / f"{parts[1]}.{ext}"
-    if len(parts) == 3 and ROUND_RE.fullmatch(parts[1]) and parts[2] in {"delivery", "audit", "response"}:
+    if len(parts) == 3 and ROUND_RE.fullmatch(parts[1]) and (
+        parts[2] in {"delivery", "audit"} or RESPONSE_DOC_RE.fullmatch(parts[2])
+    ):
         return tdir / parts[1] / f"{parts[2]}.{ext}"
     return None
 
 
 def write_exchange_doc(tdir: Path, state: dict[str, Any], doc_type: str, rnd: int,
-                       meta: dict[str, Any], md_text: str, extend: bool = False) -> None:
+                       meta: dict[str, Any], md_text: str) -> None:
     json_path = doc_sidecar(tdir, meta["doc"], "json")
     md_path = doc_sidecar(tdir, meta["doc"], "md")
     assert json_path is not None and md_path is not None
-    if not extend and (json_path.exists() or md_path.exists()):
+    if json_path.exists() or md_path.exists():
         raise ExchangeError(
             "document already exists; exchange history is append-only",
             miss=[str(json_path)],
             fix=["open a new round with dol exchange deliver"],
         )
+    meta["md_sha256"] = hashlib.sha256(md_text.encode("utf-8")).hexdigest()
     write_json_atomic(json_path, meta)
     write_file_atomic(md_path, md_text)
     if meta["doc"] not in state["docs"]:
@@ -1169,23 +1176,6 @@ def render_findings_md(findings: list[dict[str, str]]) -> str:
             f"- advice: {finding['advice']}"
         )
     return "\n\n".join(blocks)
-
-
-def render_response_doc(meta: dict[str, Any]) -> str:
-    lines = "\n".join(
-        f"- {item['finding']}: {item['action']}; {item['note']} ({item['ts']})"
-        for item in meta["responses"]
-    )
-    return render_template(
-        "exchange-response.md",
-        doc=meta["doc"],
-        round=str(meta["round"]),
-        audit=meta["audit"],
-        from_agent=meta["from"],
-        to_agent=meta["to"],
-        ts=meta["ts"],
-        responses=lines,
-    )
 
 
 def cmd_exchange_new(args: argparse.Namespace) -> int:
@@ -1268,6 +1258,22 @@ def cmd_exchange_deliver(args: argparse.Namespace) -> int:
     va = parse_va(args.va)
     with task_lock(tdir):
         state = read_task_state(tdir)
+        if state.get("status") in {"changes_requested", "disputed"}:
+            current = int(state["round"])
+            audit_path = tdir / f"r{current:03d}" / "audit.json"
+            if audit_path.is_file():
+                audit = json.loads(read_text(audit_path))
+                missing = [
+                    finding["id"]
+                    for finding in audit.get("findings", [])
+                    if not (tdir / f"r{current:03d}" / f"response-{finding['id']}.json").is_file()
+                ]
+                if missing:
+                    raise ExchangeError(
+                        "unanswered findings block a new round",
+                        miss=missing,
+                        fix=[f"dol exchange respond {args.task} --finding <id> --action accept|dispute --note <evidence>"],
+                    )
         transition(state, "ready_for_audit")
         rnd = int(state["round"]) + 1
         meta = {
@@ -1338,12 +1344,27 @@ def cmd_exchange_audit_submit(args: argparse.Namespace) -> int:
         if not delivery_path.is_file():
             raise ExchangeError("no delivery for the current round", miss=[str(delivery_path)])
         delivery = json.loads(read_text(delivery_path))
-        if args.verdict == "approve" and not delivery.get("validation"):
-            raise ExchangeError(
-                "approve requires recorded validation evidence",
-                miss=["delivery.validation"],
-                fix=["use --verdict request_changes, or redeliver with --va cmd=result"],
-            )
+        if args.verdict == "approve":
+            if not delivery.get("validation"):
+                raise ExchangeError(
+                    "approve requires recorded validation evidence",
+                    miss=["delivery.validation"],
+                    fix=["use --verdict request_changes, or redeliver with --va cmd=result"],
+                )
+            failed = [v for v in delivery["validation"] if v.get("result") in FAILED_VA_RESULTS]
+            if failed:
+                raise ExchangeError(
+                    "approve requires every validation result to pass",
+                    miss=[f"{v.get('cmd')}={v.get('result')}" for v in failed],
+                    fix=["use --verdict request_changes, or redeliver with passing --va results"],
+                )
+            blocking = [f["id"] for f in findings if f["severity"] in BLOCKING_SEVERITIES]
+            if blocking:
+                raise ExchangeError(
+                    "approve cannot carry blocker/major findings",
+                    miss=blocking,
+                    fix=["use --verdict request_changes, or downgrade to minor/info with justification"],
+                )
         if args.verdict == "request_changes" and not findings:
             raise ExchangeError(
                 "request_changes requires at least one --finding",
@@ -1386,6 +1407,11 @@ def cmd_exchange_audit_submit(args: argparse.Namespace) -> int:
 
 def cmd_exchange_respond(args: argparse.Namespace) -> int:
     tdir = task_path(args.task, repo_root())
+    if not args.note.strip():
+        raise ExchangeError(
+            "a response requires a non-empty --note with evidence",
+            fix=["--note 'fixed in <commit>' or '--note <why the finding is wrong, with evidence>'"],
+        )
     with task_lock(tdir):
         state = read_task_state(tdir)
         if state.get("status") not in {"changes_requested", "disputed"}:
@@ -1401,31 +1427,42 @@ def cmd_exchange_respond(args: argparse.Namespace) -> int:
         known = {finding["id"] for finding in audit.get("findings", [])}
         if args.finding not in known:
             raise ExchangeError(f"unknown finding: {args.finding}", fix=[f"known findings: {sorted(known)}"])
-        resp_path = tdir / f"r{rnd:03d}" / "response.json"
+        resp_path = tdir / f"r{rnd:03d}" / f"response-{args.finding}.json"
         if resp_path.exists():
-            meta = json.loads(read_text(resp_path))
-        else:
-            meta = {
-                "doc": f"{args.task}/r{rnd:03d}/response",
-                "type": "response",
-                "task": args.task,
-                "round": rnd,
-                "from": state["executor"],
-                "to": state["auditor"],
-                "ts": now_iso(),
-                "audit": audit["doc"],
-                "responses": [],
-            }
-        meta["responses"].append({
+            raise ExchangeError(
+                f"finding {args.finding} already has an immutable response",
+                miss=[str(resp_path)],
+                fix=["address it again in the next round delivery claims"],
+            )
+        meta = {
+            "doc": f"{args.task}/r{rnd:03d}/response-{args.finding}",
+            "type": "response",
+            "task": args.task,
+            "round": rnd,
+            "from": state["executor"],
+            "to": state["auditor"],
+            "ts": now_iso(),
+            "audit": audit["doc"],
             "finding": args.finding,
             "action": args.action,
             "note": clip(args.note),
-            "ts": now_iso(),
-        })
-        write_exchange_doc(tdir, state, "response", rnd, meta, render_response_doc(meta), extend=True)
+        }
+        body = render_template(
+            "exchange-response.md",
+            doc=meta["doc"],
+            round=str(rnd),
+            audit=meta["audit"],
+            finding=args.finding,
+            action=args.action,
+            from_agent=meta["from"],
+            to_agent=meta["to"],
+            ts=meta["ts"],
+            note=meta["note"],
+        )
+        write_exchange_doc(tdir, state, "response", rnd, meta, body)
         transition(state, "disputed" if args.action == "dispute" else state["status"])
         write_task_state(tdir, state)
-    print_json({"ok": True, "task": args.task, "status": state["status"], "doc": meta["doc"], "responses": len(meta["responses"])})
+    print_json({"ok": True, "task": args.task, "status": state["status"], "doc": meta["doc"]})
     return 0
 
 
@@ -1502,15 +1539,18 @@ def validate_exchange(root: Path | None = None, task_id: str | None = None) -> d
             return {"ok": False, "errors": errors, "tasks": 0}
         names = [task_id]
     elif base.exists():
-        names = sorted(path.name for path in base.glob("*") if (path / "state.json").is_file())
+        names = sorted(path.name for path in base.glob("*") if path.is_dir())
     else:
         names = []
+
+    def is_int(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
 
     for name in names:
         tdir = base / name
         state_path = tdir / "state.json"
         if not state_path.is_file():
-            issue(state_path, "missing state.json")
+            issue(tdir, "orphan task directory without state.json")
             continue
         try:
             state = json.loads(read_text(state_path))
@@ -1523,20 +1563,37 @@ def validate_exchange(root: Path | None = None, task_id: str | None = None) -> d
         status = state.get("status")
         if status not in EXCHANGE_STATUSES:
             issue(state_path, f"invalid status: {status}")
-        if not isinstance(state.get("round"), int) or state["round"] < 0:
+        state_round = state.get("round")
+        if not is_int(state_round) or state_round < 0:
             issue(state_path, "round must be a non-negative integer")
+            state_round = 0
         docs = state.get("docs", [])
-        if not isinstance(docs, list) or len(docs) != len(set(docs)):
-            issue(state_path, "doc index must be a list of unique ids")
+        if not isinstance(docs, list) or not all(isinstance(doc, str) for doc in docs):
+            issue(state_path, "doc index must be a list of strings")
             docs = []
+        elif len(docs) != len(set(docs)):
+            issue(state_path, "doc index contains duplicate ids")
         if f"{name}/request" not in docs:
             issue(state_path, "missing request doc in index")
 
+        # disk -> index: every sidecar on disk must be indexed in state.json
+        indexed = set(docs)
+        for json_file in sorted(tdir.rglob("*.json")):
+            if json_file.name in {"state.json"} or json_file.name.endswith(".tmp"):
+                continue
+            rel = json_file.relative_to(tdir).with_suffix("")
+            if json_file.parent == tdir:
+                disk_id = f"{name}/{rel.name}"
+            else:
+                disk_id = f"{name}/{rel.parent.name}/{rel.name}"
+            if disk_id not in indexed:
+                issue(json_file, "unindexed document not present in state docs")
+
         deliveries: dict[int, dict[str, Any]] = {}
         audits: dict[int, dict[str, Any]] = {}
-        responses: dict[int, dict[str, Any]] = {}
+        responses: dict[tuple[int, str], dict[str, Any]] = {}
         for doc_id in docs:
-            if not isinstance(doc_id, str) or not doc_id.startswith(name + "/"):
+            if not doc_id.startswith(name + "/"):
                 issue(state_path, f"doc id outside task: {doc_id}")
                 continue
             json_path = doc_sidecar(tdir, doc_id, "json")
@@ -1547,12 +1604,18 @@ def validate_exchange(root: Path | None = None, task_id: str | None = None) -> d
             if not json_path.is_file():
                 issue(json_path, "missing doc sidecar")
                 continue
+            md_text: str | None = None
             if not md_path.is_file():
                 issue(md_path, "missing doc markdown")
+            else:
+                md_text = read_text(md_path)
             try:
                 meta = json.loads(read_text(json_path))
             except json.JSONDecodeError as exc:
                 issue(json_path, f"invalid json: {exc}")
+                continue
+            if not isinstance(meta, dict):
+                issue(json_path, "sidecar must be a json object")
                 continue
             dtype = meta.get("type")
             if dtype not in EXCHANGE_DOC_TYPES:
@@ -1563,62 +1626,107 @@ def validate_exchange(root: Path | None = None, task_id: str | None = None) -> d
             for key in EXCHANGE_REQUIRED[dtype]:
                 if key not in meta:
                     issue(json_path, f"missing field: {key}")
+            if md_text is not None and isinstance(meta.get("md_sha256"), str):
+                actual = hashlib.sha256(md_text.encode("utf-8")).hexdigest()
+                if meta["md_sha256"] != actual:
+                    issue(md_path, "markdown hash mismatch; document was modified after writing")
+            meta_round = meta.get("round")
+            if not is_int(meta_round) or meta_round < 0:
+                issue(json_path, "round must be a non-negative integer")
+                meta_round = None
             parts = doc_id.split("/")
-            if len(parts) == 3 and meta.get("round") != int(parts[1][1:]):
+            if len(parts) == 3 and meta_round is not None and meta_round != int(parts[1][1:]):
                 issue(json_path, "round does not match the round directory")
-            if dtype == "request" and meta.get("round") != 0:
+            if dtype == "request" and meta_round not in (0, None):
                 issue(json_path, "request round must be 0")
             if dtype == "delivery":
-                deliveries[int(meta.get("round", -1))] = meta
-                for va in meta.get("validation", []):
-                    if va.get("result") not in EXCHANGE_VA_RESULTS:
-                        issue(json_path, f"invalid validation result: {va.get('result')}")
+                if meta_round is not None:
+                    deliveries[meta_round] = meta
+                validation = meta.get("validation", [])
+                if not isinstance(validation, list):
+                    issue(json_path, "validation must be a list")
+                else:
+                    for va in validation:
+                        if not isinstance(va, dict) or not isinstance(va.get("cmd"), str):
+                            issue(json_path, "validation entries must be objects with a string cmd")
+                            continue
+                        if va.get("result") not in EXCHANGE_VA_RESULTS:
+                            issue(json_path, f"invalid validation result: {va.get('result')}")
+                for key in ["changed_files", "claims", "limitations", "risks", "open_questions"]:
+                    if key in meta and not isinstance(meta[key], list):
+                        issue(json_path, f"{key} must be a list")
             elif dtype == "audit":
-                audits[int(meta.get("round", -1))] = meta
+                if meta_round is not None:
+                    audits[meta_round] = meta
                 if meta.get("verdict") not in AUDIT_VERDICTS:
                     issue(json_path, f"invalid verdict: {meta.get('verdict')}")
-                for finding in meta.get("findings", []):
-                    for key in ["id", "severity", "path", "evidence", "advice"]:
-                        if key not in finding:
-                            issue(json_path, f"finding missing field: {key}")
-                    if finding.get("severity") not in FINDING_SEVERITIES:
-                        issue(json_path, f"invalid finding severity: {finding.get('severity')}")
+                findings = meta.get("findings", [])
+                if not isinstance(findings, list):
+                    issue(json_path, "findings must be a list")
+                else:
+                    for finding in findings:
+                        if not isinstance(finding, dict):
+                            issue(json_path, "finding must be an object")
+                            continue
+                        for key in ["id", "severity", "path", "evidence", "advice"]:
+                            if key not in finding:
+                                issue(json_path, f"finding missing field: {key}")
+                        if finding.get("severity") not in FINDING_SEVERITIES:
+                            issue(json_path, f"invalid finding severity: {finding.get('severity')}")
             elif dtype == "response":
-                responses[int(meta.get("round", -1))] = meta
+                if meta_round is not None and isinstance(meta.get("finding"), str):
+                    responses[(meta_round, meta["finding"])] = meta
+                if meta.get("action") not in RESPONSE_ACTIONS:
+                    issue(json_path, f"invalid response action: {meta.get('action')}")
+                if not str(meta.get("note", "")).strip():
+                    issue(json_path, "response note must be non-empty evidence")
+                expected_id = f"{name}/r{(meta_round or 0):03d}/response-{meta.get('finding')}"
+                if meta_round is not None and meta.get("finding") and doc_id != expected_id:
+                    issue(json_path, "response doc id does not match its finding")
             elif dtype == "closure" and meta.get("resolution") not in CLOSURE_RESOLUTIONS:
                 issue(json_path, f"invalid closure resolution: {meta.get('resolution')}")
 
         for rnd, audit in audits.items():
+            audit_file = tdir / f"r{rnd:03d}" / "audit.json"
             delivery = deliveries.get(rnd)
             if delivery is None:
-                issue(tdir / f"r{rnd:03d}" / "audit.json", "audit without a delivery in the same round")
+                issue(audit_file, "audit without a delivery in the same round")
                 continue
             if str(delivery.get("ts", "")) > str(audit.get("ts", "")):
-                issue(tdir / f"r{rnd:03d}" / "audit.json", "audit predates its delivery")
+                issue(audit_file, "audit predates its delivery")
             if audit.get("delivery") != delivery.get("doc"):
-                issue(tdir / f"r{rnd:03d}" / "audit.json", "audit does not reference the round delivery")
-            if audit.get("verdict") == "approve" and not delivery.get("validation"):
-                issue(tdir / f"r{rnd:03d}" / "audit.json", "approved without validation evidence")
-        for rnd, response in responses.items():
+                issue(audit_file, "audit does not reference the round delivery")
+            if audit.get("verdict") == "approve":
+                validation = delivery.get("validation")
+                if not validation:
+                    issue(audit_file, "approved without validation evidence")
+                elif any(va.get("result") in FAILED_VA_RESULTS for va in validation if isinstance(va, dict)):
+                    issue(audit_file, "approved despite failing validation evidence")
+                findings = audit.get("findings", [])
+                if any(isinstance(f, dict) and f.get("severity") in BLOCKING_SEVERITIES for f in findings):
+                    issue(audit_file, "approved despite blocker/major findings")
+        for (rnd, finding_id), response in responses.items():
+            response_file = tdir / f"r{rnd:03d}" / f"response-{finding_id}.json"
             audit = audits.get(rnd)
             if audit is None:
-                issue(tdir / f"r{rnd:03d}" / "response.json", "response without an audit in the same round")
+                issue(response_file, "response without an audit in the same round")
                 continue
             if response.get("audit") != audit.get("doc"):
-                issue(tdir / f"r{rnd:03d}" / "response.json", "response does not reference the round audit")
-            known = {finding.get("id") for finding in audit.get("findings", [])}
-            for item in response.get("responses", []):
-                if item.get("finding") not in known:
-                    issue(tdir / f"r{rnd:03d}" / "response.json", f"unknown finding: {item.get('finding')}")
-                if item.get("action") not in RESPONSE_ACTIONS:
-                    issue(tdir / f"r{rnd:03d}" / "response.json", f"invalid response action: {item.get('action')}")
+                issue(response_file, "response does not reference the round audit")
+            known = {f.get("id") for f in audit.get("findings", []) if isinstance(f, dict)}
+            if finding_id not in known:
+                issue(response_file, f"unknown finding: {finding_id}")
 
-        current_round = state.get("round", 0)
+        if status == "requested" and state_round != 0:
+            issue(state_path, "requested task must be at round 0")
+        if status in {"ready_for_audit", "auditing", "changes_requested", "disputed", "approved"}:
+            if state_round not in deliveries:
+                issue(state_path, f"status {status} requires a delivery in round {state_round}")
         if status == "approved":
             approved_round = state.get("approved_round")
-            if not isinstance(approved_round, int) or audits.get(approved_round, {}).get("verdict") != "approve":
+            if not is_int(approved_round) or audits.get(approved_round, {}).get("verdict") != "approve":
                 issue(state_path, "approved without a matching approve audit round")
-        if status == "changes_requested" and audits.get(current_round, {}).get("verdict") != "request_changes":
+        if status == "changes_requested" and audits.get(state_round, {}).get("verdict") != "request_changes":
             issue(state_path, "changes_requested without a request_changes audit in the current round")
         if status == "closed" and f"{name}/closure" not in docs:
             issue(state_path, "closed without a closure doc")

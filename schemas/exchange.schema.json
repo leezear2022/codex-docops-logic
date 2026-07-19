@@ -22,7 +22,7 @@
     },
     "request": {
       "type": "object",
-      "required": ["doc", "type", "task", "round", "from", "to", "executor", "auditor", "ts", "title", "request", "scope", "acceptance", "base_commit"],
+      "required": ["doc", "type", "task", "round", "from", "to", "executor", "auditor", "ts", "title", "request", "scope", "acceptance", "base_commit", "md_sha256"],
       "properties": {
         "doc": {"type": "string"},
         "type": {"const": "request"},
@@ -37,13 +37,14 @@
         "request": {"type": "string"},
         "scope": {"type": "string"},
         "acceptance": {"type": "array", "items": {"type": "string"}},
-        "base_commit": {"type": "string", "description": "empty string means not recorded; commit hashes are recommended evidence, not required"}
+        "base_commit": {"type": "string", "description": "empty string means not recorded; commit hashes are recommended evidence, not required"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "additionalProperties": true
     },
     "delivery": {
       "type": "object",
-      "required": ["doc", "type", "task", "round", "from", "to", "ts", "base_commit", "result_commit", "changed_files", "claims", "validation", "limitations", "risks", "open_questions"],
+      "required": ["doc", "type", "task", "round", "from", "to", "ts", "base_commit", "result_commit", "changed_files", "claims", "validation", "limitations", "risks", "open_questions", "md_sha256"],
       "properties": {
         "doc": {"type": "string"},
         "type": {"const": "delivery"},
@@ -63,19 +64,20 @@
             "required": ["cmd", "result"],
             "properties": {
               "cmd": {"type": "string"},
-              "result": {"enum": ["pass", "fail", "mix"]}
+              "result": {"enum": ["pass", "fail", "mix", "not_applicable"]}
             }
           }
         },
         "limitations": {"type": "array", "items": {"type": "string"}},
         "risks": {"type": "array", "items": {"type": "string"}},
-        "open_questions": {"type": "array", "items": {"type": "string"}}
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "additionalProperties": true
     },
     "audit": {
       "type": "object",
-      "required": ["doc", "type", "task", "round", "from", "to", "ts", "verdict", "delivery", "findings", "summary"],
+      "required": ["doc", "type", "task", "round", "from", "to", "ts", "verdict", "delivery", "findings", "summary", "md_sha256"],
       "properties": {
         "doc": {"type": "string"},
         "type": {"const": "audit"},
@@ -100,15 +102,16 @@
             }
           }
         },
-        "summary": {"type": "string"}
+        "summary": {"type": "string"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "additionalProperties": true
     },
     "response": {
       "type": "object",
-      "required": ["doc", "type", "task", "round", "from", "to", "ts", "audit", "responses"],
+      "required": ["doc", "type", "task", "round", "from", "to", "ts", "audit", "finding", "action", "note", "md_sha256"],
       "properties": {
-        "doc": {"type": "string"},
+        "doc": {"type": "string", "description": "<task>/rNNN/response-F<n>; one immutable document per finding"},
         "type": {"const": "response"},
         "task": {"type": "string"},
         "round": {"type": "integer", "minimum": 1},
@@ -116,25 +119,16 @@
         "to": {"type": "string"},
         "ts": {"type": "string"},
         "audit": {"type": "string", "description": "doc id of the audit being answered"},
-        "responses": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["finding", "action", "note", "ts"],
-            "properties": {
-              "finding": {"type": "string", "pattern": "^F[0-9]+$"},
-              "action": {"enum": ["accept", "dispute"]},
-              "note": {"type": "string"},
-              "ts": {"type": "string"}
-            }
-          }
-        }
+        "finding": {"type": "string", "pattern": "^F[0-9]+$"},
+        "action": {"enum": ["accept", "dispute"]},
+        "note": {"type": "string", "minLength": 1, "description": "evidence for the accept or dispute"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "additionalProperties": true
     },
     "closure": {
       "type": "object",
-      "required": ["doc", "type", "task", "round", "from", "ts", "resolution", "approved_round", "note"],
+      "required": ["doc", "type", "task", "round", "from", "ts", "resolution", "approved_round", "note", "md_sha256"],
       "properties": {
         "doc": {"type": "string"},
         "type": {"const": "closure"},
@@ -144,7 +138,8 @@
         "ts": {"type": "string"},
         "resolution": {"enum": ["approved", "cancelled"]},
         "approved_round": {"type": ["integer", "null"]},
-        "note": {"type": "string"}
+        "note": {"type": "string"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       },
       "additionalProperties": true
     }

@@ -39,8 +39,10 @@ python3 "<plugin-root>/scripts/dol.py" exchange close <task-id>
 Rules:
 - Deliver only from in_progress, changes_requested, or disputed; each deliver
   starts a new round and never overwrites an old one.
-- Record real validation commands and results; approval without recorded
-  evidence is rejected.
+- Record real validation commands and results; approval is rejected unless
+  every recorded result passes and the audit carries no blocker/major finding.
+- Every finding needs exactly one response with a non-empty evidence --note
+  before the next round can start; responses are immutable per finding.
 - Dispute a finding only with concrete evidence in --note.
 - Audit approval does not replace project CI or human review.
 - If you are the auditor instead, follow templates/kimi-auditor.md.

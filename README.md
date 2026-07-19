@@ -183,11 +183,21 @@ Notes:
   the two agents never need to be online at the same time.
 - Git commit hashes are recommended evidence, not strictly required; empty
   `base_commit`/`result_commit` means "not recorded".
-- Approval requires recorded validation evidence and never replaces the
-  project's own CI or human review.
+- Approval requires recorded validation evidence with **all results passing**
+  (`fail`/`mix` block approval; use `not_applicable` with a reason for steps
+  that do not apply, e.g. `--va "docs-only change, no tests applicable=not_applicable"`),
+  and an approving audit may not carry `blocker`/`major` findings. Approval
+  never replaces the project's own CI or human review.
+- Every finding must be answered with exactly one immutable, evidence-backed
+  response (`response-F<n>` documents, non-empty `--note`); a new round cannot
+  start while findings are unanswered.
 - The state machine (`requested -> ... -> approved -> closed`) rejects illegal
   transitions with actionable errors; there is no `--force` and no way to
-  overwrite a previous round.
+  overwrite a previous round. Each Markdown document is pinned by a
+  `md_sha256` in its sidecar, so after-the-fact edits are detected by
+  `exchange validate`.
+- `exchange validate` cross-checks the state index against the documents on
+  disk in both directions and enforces per-status invariants.
 - Kimi Code needs no plugin: `templates/kimi-auditor.md` plus this CLI and the
   exchange documents are enough to audit.
 

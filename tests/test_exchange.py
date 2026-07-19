@@ -173,9 +173,11 @@ class ExchangeTests(unittest.TestCase):
         self.cli("exchange", "audit-start", self.task)
         rc, _ = self.cli("exchange", "audit-submit", self.task, "--verdict", "approve")
         self.assertEqual(rc, 0)
-        response = self.sidecar(f"{self.task}/r001/response")
-        self.assertEqual(len(response["responses"]), 2)
-        self.assertEqual(response["responses"][0]["action"], "dispute")
+        response_f1 = self.sidecar(f"{self.task}/r001/response-F1")
+        response_f2 = self.sidecar(f"{self.task}/r001/response-F2")
+        self.assertEqual(response_f1["action"], "dispute")
+        self.assertEqual(response_f2["action"], "accept")
+        self.assertEqual(response_f1["audit"], response_f2["audit"])
 
     def test_illegal_transitions_are_rejected(self) -> None:
         self.new_task()
@@ -263,6 +265,130 @@ class ExchangeTests(unittest.TestCase):
         rc, out = self.cli("exchange", "validate", self.task)
         self.assertEqual(rc, 1)
         self.assertTrue(any("delivery" in err["path"] for err in out["errors"]))
+
+    def test_validate_detects_markdown_edits_via_hash(self) -> None:
+        self.new_task()
+        request_md = self.task_dir() / "request.md"
+        request_md.write_text(request_md.read_text(encoding="utf-8") + "\ntampered\n", encoding="utf-8")
+        rc, out = self.cli("exchange", "validate", self.task)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("hash mismatch" in err["why"] for err in out["errors"]))
+
+    def test_validate_detects_orphan_and_unindexed_documents(self) -> None:
+        self.new_task()
+        orphan = self.root / ".docops" / "exchange" / "orphan"
+        orphan.mkdir(parents=True)
+        (orphan / "request.json").write_text("{}", encoding="utf-8")
+        ghost = self.task_dir() / "r999"
+        ghost.mkdir()
+        (ghost / "audit.json").write_text("{}", encoding="utf-8")
+        rc, out = self.cli("exchange", "validate", "--all")
+        self.assertEqual(rc, 1)
+        whys = [err["why"] for err in out["errors"]]
+        self.assertTrue(any("orphan" in why for why in whys))
+        self.assertTrue(any("unindexed" in why for why in whys))
+
+    def test_validate_detects_state_manipulation(self) -> None:
+        self.new_task()
+        state_path = self.task_dir() / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["status"] = "ready_for_audit"
+        state["round"] = 999
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        rc, out = self.cli("exchange", "validate", self.task)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("requires a delivery" in err["why"] for err in out["errors"]))
+
+    def test_validate_returns_structured_error_on_bad_types(self) -> None:
+        self.new_task()
+        self.cli("exchange", "start", self.task)
+        self.deliver()
+        delivery_path = self.task_dir() / "r001" / "delivery.json"
+        delivery = json.loads(delivery_path.read_text(encoding="utf-8"))
+        delivery["round"] = [1]
+        delivery_path.write_text(json.dumps(delivery), encoding="utf-8")
+        rc, out = self.cli("exchange", "validate", self.task)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("round" in err["why"] for err in out["errors"]))
+
+    def test_approve_rejects_failing_evidence_and_major_findings(self) -> None:
+        self.new_task()
+        self.cli("exchange", "start", self.task)
+        self.cli("exchange", "deliver", self.task,
+                 "--claims", "attempted fix",
+                 "--va", "python3 -m unittest discover -s tests=fail")
+        self.cli("exchange", "audit-start", self.task)
+        rc, out = self.cli("exchange", "audit-submit", self.task, "--verdict", "approve")
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("tests=fail" in miss for miss in out["miss"]))
+
+        self.task = "rpc-7005"
+        self.new_task()
+        self.cli("exchange", "start", self.task)
+        self.cli("exchange", "deliver", self.task,
+                 "--claims", "green",
+                 "--va", "python3 -m unittest discover -s tests=pass")
+        self.cli("exchange", "audit-start", self.task)
+        rc, out = self.cli("exchange", "audit-submit", self.task, "--verdict", "approve",
+                           "--finding", "major|a.py:1|still broken|fix it")
+        self.assertEqual(rc, 1)
+        self.assertIn("blocker/major", out["why"])
+        rc, _ = self.cli("exchange", "audit-submit", self.task, "--verdict", "approve",
+                         "--finding", "minor|a.py:2|nit|optional tidy")
+        self.assertEqual(rc, 0)
+
+    def test_not_applicable_validation_allows_approve(self) -> None:
+        self.new_task()
+        self.cli("exchange", "start", self.task)
+        self.cli("exchange", "deliver", self.task,
+                 "--files", "docs/guide.md",
+                 "--claims", "docs only change",
+                 "--va", "docs-only change, no tests applicable=not_applicable")
+        self.cli("exchange", "audit-start", self.task)
+        rc, out = self.cli("exchange", "audit-submit", self.task, "--verdict", "approve")
+        self.assertEqual(rc, 0, out)
+
+    def test_respond_requires_note_and_single_answer(self) -> None:
+        self.new_task()
+        self.cli("exchange", "start", self.task)
+        self.deliver()
+        self.audit_round_one("request_changes",
+                             "--finding", "major|a.py:1|evidence|advice")
+        rc, out = self.cli("exchange", "respond", self.task, "--finding", "F1",
+                           "--action", "accept", "--note", "  ")
+        self.assertEqual(rc, 1)
+        self.assertIn("non-empty --note", out["why"])
+        rc, _ = self.cli("exchange", "respond", self.task, "--finding", "F1",
+                         "--action", "accept", "--note", "fixed in def789")
+        self.assertEqual(rc, 0)
+        rc, out = self.cli("exchange", "respond", self.task, "--finding", "F1",
+                           "--action", "dispute", "--note", "second answer")
+        self.assertEqual(rc, 1)
+        self.assertIn("immutable", out["why"])
+
+    def test_new_round_blocked_until_all_findings_answered(self) -> None:
+        self.new_task()
+        self.cli("exchange", "start", self.task)
+        self.deliver()
+        self.audit_round_one(
+            "request_changes",
+            "--finding", "major|a.py:1|evidence one|advice",
+            "--finding", "minor|a.py:2|evidence two|advice",
+        )
+        self.cli("exchange", "respond", self.task, "--finding", "F1",
+                 "--action", "accept", "--note", "fixed")
+        rc, out = self.cli("exchange", "deliver", self.task,
+                           "--claims", "next round",
+                           "--va", "python3 -m unittest discover -s tests=pass")
+        self.assertEqual(rc, 1)
+        self.assertEqual(out["miss"], ["F2"])
+        self.cli("exchange", "respond", self.task, "--finding", "F2",
+                 "--action", "dispute", "--note", "not a bug, covered by deadline")
+        rc, out = self.cli("exchange", "deliver", self.task,
+                           "--claims", "next round",
+                           "--va", "python3 -m unittest discover -s tests=pass")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["round"], 2)
 
     def test_schema_matches_validator_contract(self) -> None:
         schema = json.loads((ROOT / "schemas" / "exchange.schema.json").read_text(encoding="utf-8"))

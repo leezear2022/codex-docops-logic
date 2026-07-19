@@ -44,18 +44,24 @@ Rules:
 - Every finding must include severity (`blocker|major|minor|info`), a file or
   location, reproducible evidence, and a concrete suggestion.
 - Use `--verdict approve` only when the delivery records validation evidence
-  (`validation` non-empty) **and** your own code review found no issues.
+  with **all results passing** (`fail`/`mix` block approval) **and** your own
+  code review found no issues. An approving audit may not carry
+  `blocker`/`major` findings; downgrade is only acceptable with justification.
 - Never write tokens, secrets, or full sensitive command output into audit
   documents.
 
 ## After your report
 
-- The executor answers each finding with `exchange respond` (accept or
-  dispute, with evidence) and delivers a new round with `exchange deliver`.
-- You then re-audit the new round: `audit-start` + `audit-submit`.
+- The executor answers **each** finding with `exchange respond` (accept or
+  dispute, with a non-empty evidence note); each answer becomes one immutable
+  `response-F<n>` document. A new round cannot start while findings are
+  unanswered.
+- The executor then delivers a new round with `exchange deliver`; you re-audit
+  the new round: `audit-start` + `audit-submit`.
 - Approval records the audited round; the executor closes the task with
   `exchange close`.
-- Check consistency anytime: `exchange validate <task-id>`.
+- Check consistency anytime: `exchange validate <task-id>` (cross-checks index
+  and disk both ways, verifies Markdown hashes and per-status invariants).
 
 This is an asynchronous document protocol, not a chat: you and the executor
 never need to be online at the same time.

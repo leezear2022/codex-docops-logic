@@ -1,25 +1,38 @@
 {
-  "schema": "docops-logic.hooks.v1.best-effort",
-  "_comment": "Conceptual hooks for Codex environments that support hooks. If the active Codex hook schema differs, activate these commands manually or adapt the event names below.",
-  "hooks": [
-    {
-      "event": "UserPromptSubmit",
-      "purpose": "Load compact DocOps context when .docops exists.",
-      "command": "test -f .docops/s.md && { printf 'DOCOPS\\n'; cat .docops/s.md; printf '\\nRULES\\n'; cat .docops/c.yaml; printf '\\nKB_TAIL\\n'; tail -20 .docops/k.jsonl; } || true"
-    },
-    {
-      "event": "PostToolUse",
-      "purpose": "Capture compact command or file-change summaries into .docops/ev.jsonl when the host exposes hook variables.",
-      "command": "test -d .docops && python3 codex-docops-logic/scripts/dol.py ev add --ty cmd --cmd '${CODEX_TOOL_COMMAND:-tool}' --summary '${CODEX_TOOL_SUMMARY:-post_tool_use}' || true"
-    },
-    {
-      "event": "Stop",
-      "purpose": "Run soft deterministic reminders before handoff.",
-      "command": "test -d .docops && python3 codex-docops-logic/scripts/dol.py lint --soft || true"
-    }
-  ],
-  "manual_activation": [
-    "Run: python3 codex-docops-logic/scripts/dol.py status",
-    "Run: python3 codex-docops-logic/scripts/dol.py lint --soft"
-  ]
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/session_start.py",
+            "statusMessage": "Loading compact DocOps context"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/post_tool_use.py",
+            "statusMessage": "Recording DocOps event"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${PLUGIN_ROOT}/hooks/stop.py",
+            "statusMessage": "Checking DocOps consistency"
+          }
+        ]
+      }
+    ]
+  }
 }

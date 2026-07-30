@@ -1,12 +1,12 @@
 {
   "name": "docops-logic",
-  "version": "0.1.0",
+  "version": "0.2.0+codex.20260718140000",
   "description": "Low-token DocOps workflow with symbolic knowledge cards, deterministic constraints, and a CP-ready solver interface.",
   "author": {
     "name": "DocOps Logic"
   },
-  "homepage": "https://github.com/docops-logic/codex-docops-logic",
-  "repository": "https://github.com/docops-logic/codex-docops-logic",
+  "homepage": "https://github.com/leezear2022/codex-docops-logic",
+  "repository": "https://github.com/leezear2022/codex-docops-logic",
   "license": "MIT",
   "keywords": [
     "docops",
@@ -16,7 +16,6 @@
     "cp-ready"
   ],
   "skills": "./skills/",
-  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "DocOps Logic",
     "shortDescription": "Low-token DocOps workflows with symbolic constraints",
@@ -28,14 +27,13 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/docops-logic/codex-docops-logic",
-    "privacyPolicyURL": "https://github.com/docops-logic/codex-docops-logic",
-    "termsOfServiceURL": "https://github.com/docops-logic/codex-docops-logic",
+    "websiteURL": "https://github.com/leezear2022/codex-docops-logic",
+    "privacyPolicyURL": "https://github.com/leezear2022/codex-docops-logic/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/leezear2022/codex-docops-logic/blob/main/LICENSE",
     "defaultPrompt": [
       "Initialize DocOps Logic for this project",
       "Show DocOps status and lint reminders",
-      "Log a change and validation",
-      "Create a standalone small plan or changelog"
+      "Log a change and validation"
     ],
     "brandColor": "#2563EB",
     "screenshots": []

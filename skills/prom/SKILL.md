@@ -16,8 +16,8 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py prom L002
-python3 codex-docops-logic/scripts/dol.py prom L002 --to ret
+python3 "<plugin-root>/scripts/dol.py" prom L002
+python3 "<plugin-root>/scripts/dol.py" prom L002 --to ret
 ```
 
 Rules:

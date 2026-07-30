@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DocOps exchange protocol state and document sidecars",
+  "$defs": {
+    "state": {
+      "type": "object",
+      "required": ["task", "title", "status", "round", "executor", "auditor", "approved_round", "docs", "created", "updated"],
+      "properties": {
+        "task": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+        "title": {"type": "string"},
+        "status": {"enum": ["requested", "in_progress", "ready_for_audit", "auditing", "changes_requested", "disputed", "approved", "closed"]},
+        "round": {"type": "integer", "minimum": 0},
+        "executor": {"type": "string"},
+        "auditor": {"type": "string"},
+        "approved_round": {"type": ["integer", "null"]},
+        "docs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "rev": {"type": "integer"},
+        "created": {"type": "string"},
+        "updated": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "request": {
+      "type": "object",
+      "required": ["doc", "type", "task", "round", "from", "to", "executor", "auditor", "ts", "title", "request", "scope", "acceptance", "base_commit", "md_sha256"],
+      "properties": {
+        "doc": {"type": "string"},
+        "type": {"const": "request"},
+        "task": {"type": "string"},
+        "round": {"const": 0},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "executor": {"type": "string"},
+        "auditor": {"type": "string"},
+        "ts": {"type": "string"},
+        "title": {"type": "string"},
+        "request": {"type": "string"},
+        "scope": {"type": "string"},
+        "acceptance": {"type": "array", "items": {"type": "string"}},
+        "base_commit": {"type": "string", "description": "empty string means not recorded; commit hashes are recommended evidence, not required"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "delivery": {
+      "type": "object",
+      "required": ["doc", "type", "task", "round", "from", "to", "ts", "base_commit", "result_commit", "changed_files", "claims", "validation", "limitations", "risks", "open_questions", "md_sha256"],
+      "properties": {
+        "doc": {"type": "string"},
+        "type": {"const": "delivery"},
+        "task": {"type": "string"},
+        "round": {"type": "integer", "minimum": 1},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "ts": {"type": "string"},
+        "base_commit": {"type": "string"},
+        "result_commit": {"type": "string", "description": "empty string means not recorded"},
+        "changed_files": {"type": "array", "items": {"type": "string"}},
+        "claims": {"type": "array", "items": {"type": "string"}},
+        "validation": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["cmd", "result"],
+            "properties": {
+              "cmd": {"type": "string"},
+              "result": {"enum": ["pass", "fail", "mix", "not_applicable"]}
+            }
+          }
+        },
+        "limitations": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "audit": {
+      "type": "object",
+      "required": ["doc", "type", "task", "round", "from", "to", "ts", "verdict", "delivery", "findings", "summary", "md_sha256"],
+      "properties": {
+        "doc": {"type": "string"},
+        "type": {"const": "audit"},
+        "task": {"type": "string"},
+        "round": {"type": "integer", "minimum": 1},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "ts": {"type": "string"},
+        "verdict": {"enum": ["approve", "request_changes"]},
+        "delivery": {"type": "string", "description": "doc id of the audited delivery"},
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "severity", "path", "evidence", "advice"],
+            "properties": {
+              "id": {"type": "string", "pattern": "^F[0-9]+$"},
+              "severity": {"enum": ["blocker", "major", "minor", "info"]},
+              "path": {"type": "string"},
+              "evidence": {"type": "string"},
+              "advice": {"type": "string"}
+            }
+          }
+        },
+        "summary": {"type": "string"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "response": {
+      "type": "object",
+      "required": ["doc", "type", "task", "round", "from", "to", "ts", "audit", "finding", "action", "note", "md_sha256"],
+      "properties": {
+        "doc": {"type": "string", "description": "<task>/rNNN/response-F<n>; one immutable document per finding"},
+        "type": {"const": "response"},
+        "task": {"type": "string"},
+        "round": {"type": "integer", "minimum": 1},
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "ts": {"type": "string"},
+        "audit": {"type": "string", "description": "doc id of the audit being answered"},
+        "finding": {"type": "string", "pattern": "^F[0-9]+$"},
+        "action": {"enum": ["accept", "dispute"]},
+        "note": {"type": "string", "minLength": 1, "description": "evidence for the accept or dispute"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    },
+    "closure": {
+      "type": "object",
+      "required": ["doc", "type", "task", "round", "from", "ts", "resolution", "approved_round", "note", "md_sha256"],
+      "properties": {
+        "doc": {"type": "string"},
+        "type": {"const": "closure"},
+        "task": {"type": "string"},
+        "round": {"type": "integer", "minimum": 0},
+        "from": {"type": "string"},
+        "ts": {"type": "string"},
+        "resolution": {"enum": ["approved", "cancelled"]},
+        "approved_round": {"type": ["integer", "null"]},
+        "note": {"type": "string"},
+        "md_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

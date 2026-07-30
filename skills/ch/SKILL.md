@@ -18,8 +18,8 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py ch add --stage s03 --pr 128 --slug simd-intrin-rewrite
-python3 codex-docops-logic/scripts/dol.py lint --soft
+python3 "<plugin-root>/scripts/dol.py" ch add --stage s03 --pr 128 --slug simd-intrin-rewrite
+python3 "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

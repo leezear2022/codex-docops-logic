@@ -18,10 +18,10 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py doc new --kind plan --topic cpim-metal --slug metal-gac-v3-policy --title "Metal GAC v3 Policy Plan"
-python3 codex-docops-logic/scripts/dol.py doc new --kind changelog --topic cpim-metal --slug metal-gac-v3-policy --title "Metal GAC v3 Policy Changelog"
-python3 codex-docops-logic/scripts/dol.py doc new --kind plan --topic cpim-metal --dir docs/planning/metal_gac --slug metal-gac-v3-policy
-python3 codex-docops-logic/scripts/dol.py lint --soft
+python3 "<plugin-root>/scripts/dol.py" doc new --kind plan --topic cpim-metal --slug metal-gac-v3-policy --title "Metal GAC v3 Policy Plan"
+python3 "<plugin-root>/scripts/dol.py" doc new --kind changelog --topic cpim-metal --slug metal-gac-v3-policy --title "Metal GAC v3 Policy Changelog"
+python3 "<plugin-root>/scripts/dol.py" doc new --kind plan --topic cpim-metal --dir docs/planning/metal_gac --slug metal-gac-v3-policy
+python3 "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

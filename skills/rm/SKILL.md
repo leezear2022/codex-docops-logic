@@ -19,8 +19,8 @@ Write:
 
 Prefer:
 ```bash
-python3 codex-docops-logic/scripts/dol.py rm bump v02
-python3 codex-docops-logic/scripts/dol.py lint --soft
+python3 "<plugin-root>/scripts/dol.py" rm bump v02
+python3 "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

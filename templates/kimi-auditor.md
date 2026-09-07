@@ -6,10 +6,17 @@ you act as the auditor for a DocOps exchange task. No Codex plugin or Kimi
 plugin API is required: everything below uses Markdown files and a Python
 standard-library CLI.
 
-Set the plugin path once:
+On Windows PowerShell, set the launcher path once:
+
+```powershell
+$DOL = "C:\path\to\codex-docops-logic\scripts\dol.ps1"
+```
+
+On Linux or macOS:
 
 ```bash
 DOCOPS_PLUGIN=/path/to/codex-docops-logic
+DOL="$DOCOPS_PLUGIN/scripts/dol.py"
 ```
 
 ## What you audit
@@ -29,13 +36,16 @@ You audit the **code and the evidence**, not the delivery document.
 
 ## How to report
 
-```bash
-python3 "$DOCOPS_PLUGIN/scripts/dol.py" exchange audit-start <task-id>
-python3 "$DOCOPS_PLUGIN/scripts/dol.py" exchange audit-submit <task-id> \
-  --verdict request_changes \
-  --finding "major|src/parser.py:42|off-by-one reproduced with input X|increment bound" \
+```powershell
+& $DOL exchange audit-start <task-id>
+& $DOL exchange audit-submit <task-id> `
+  --verdict request_changes `
+  --finding "major|src/parser.py:42|off-by-one reproduced with input X|increment bound" `
   --summary "one major issue"
 ```
+
+On Linux/macOS, invoke the same arguments with `python "$DOL"` and use the
+continuation syntax of the active shell.
 
 Rules:
 

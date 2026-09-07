@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class PluginContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.manifest = json.loads((ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.kimi_manifest = json.loads((ROOT / "kimi.plugin.json").read_text(encoding="utf-8"))
 
     def test_manifest_required_fields_and_version(self) -> None:
         self.assertEqual(self.manifest["name"], "docops-logic")
@@ -51,6 +52,26 @@ class PluginContractTests(unittest.TestCase):
         self.assertTrue((ROOT / "README.md").is_file())
         self.assertTrue((ROOT / "LICENSE").is_file())
         self.assertTrue((ROOT / "PRIVACY.md").is_file())
+
+    def test_kimi_manifest_reuses_skills_and_has_cross_platform_hooks(self) -> None:
+        self.assertEqual(self.kimi_manifest["name"], "docops-logic")
+        self.assertEqual(
+            self.kimi_manifest["version"],
+            self.manifest["version"].split("+", 1)[0],
+        )
+        self.assertTrue((ROOT / self.kimi_manifest["skills"]).is_dir())
+        self.assertEqual(
+            {hook["event"] for hook in self.kimi_manifest["hooks"]},
+            {"SessionStart", "PostToolUse", "Stop"},
+        )
+        for hook in self.kimi_manifest["hooks"]:
+            self.assertTrue(hook["command"].startswith('python "'))
+            self.assertNotIn("python3", hook["command"])
+            self.assertGreaterEqual(hook["timeout"], 1)
+
+    def test_windows_launchers_are_shipped(self) -> None:
+        self.assertTrue((ROOT / "scripts" / "dol.ps1").is_file())
+        self.assertTrue((ROOT / "scripts" / "dol.cmd").is_file())
 
 
 if __name__ == "__main__":

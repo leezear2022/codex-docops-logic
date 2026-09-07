@@ -16,10 +16,13 @@ Write:
 - .docops/s.md only when state changes
 
 Prefer:
+- On Windows, prefer `& "<plugin-root>\scripts\dol.ps1" ...`; use `dol.cmd` from Command Prompt.
+- On Linux/macOS, use `python "<plugin-root>/scripts/dol.py" ...`.
+
 ```bash
-python3 "<plugin-root>/scripts/dol.py" status
-python3 "<plugin-root>/scripts/dol.py" st act <stage>
-python3 "<plugin-root>/scripts/dol.py" lint --soft
+python "<plugin-root>/scripts/dol.py" status
+python "<plugin-root>/scripts/dol.py" st act <stage>
+python "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

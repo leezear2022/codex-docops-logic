@@ -26,13 +26,19 @@ class HookTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def run_hook(self, name: str, payload: dict) -> subprocess.CompletedProcess[str]:
+    def run_hook(
+        self,
+        name: str,
+        payload: dict,
+        *,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(ROOT / "hooks" / name)],
             input=json.dumps(payload),
             text=True,
             capture_output=True,
-            env=self.env,
+            env=env or self.env,
             check=False,
         )
 
@@ -45,6 +51,11 @@ class HookTests(unittest.TestCase):
                 self.assertIsInstance(group["hooks"], list)
                 self.assertEqual(group["hooks"][0]["type"], "command")
                 self.assertIn("${PLUGIN_ROOT}", group["hooks"][0]["command"])
+                self.assertIn('python "', group["hooks"][0]["command"])
+                self.assertNotIn("python3", group["hooks"][0]["command"])
+        matcher = manifest["hooks"]["PostToolUse"][0]["matcher"]
+        for tool_name in ["Bash", "PowerShell", "exec_command", "apply_patch"]:
+            self.assertIn(tool_name, matcher)
 
     def test_session_start_returns_compact_context(self) -> None:
         result = self.run_hook("session_start.py", {"cwd": str(self.workspace), "hook_event_name": "SessionStart"})
@@ -69,6 +80,59 @@ class HookTests(unittest.TestCase):
         self.assertEqual(events[-1]["cmd"], "Bash:python3")
         self.assertNotIn("super-secret", json.dumps(events[-1]))
 
+    def test_post_tool_use_recognizes_windows_shell_tools(self) -> None:
+        cases = [
+            (
+                "PowerShell",
+                "& 'C:\\Program Files\\Python311\\python.exe' .\\script.py --token secret",
+                "PowerShell:python.exe",
+            ),
+            (
+                "exec_command",
+                "C:\\Python311\\python.exe .\\script.py --token secret",
+                "exec_command:python.exe",
+            ),
+            (
+                "cmd",
+                'cmd.exe /c "C:\\Tools\\runner.cmd" --secret value',
+                "cmd:runner.cmd",
+            ),
+        ]
+        for tool_name, command, expected in cases:
+            with self.subTest(tool_name=tool_name):
+                result = self.run_hook("post_tool_use.py", {
+                    "cwd": str(self.workspace),
+                    "hook_event_name": "PostToolUse",
+                    "tool_name": tool_name,
+                    "tool_input": {"command": command},
+                })
+                self.assertEqual(result.returncode, 0, result.stderr)
+                event = dol.read_jsonl(self.workspace / ".docops" / "ev.jsonl")[-1]
+                self.assertEqual(event["cmd"], expected)
+                self.assertNotIn("secret", json.dumps(event))
+
+    def test_kimi_host_receives_plain_context_and_message(self) -> None:
+        env = dict(self.env)
+        env["KIMI_PLUGIN_ROOT"] = str(ROOT)
+        start = self.run_hook(
+            "session_start.py",
+            {"cwd": str(self.workspace), "hook_event_name": "SessionStart"},
+            env=env,
+        )
+        self.assertEqual(start.returncode, 0, start.stderr)
+        self.assertIn("DOCOPS STATE", start.stdout)
+        self.assertFalse(start.stdout.lstrip().startswith("{"))
+
+        dol.append_event("ch", self.workspace, st="s01", slug="kimi-unvalidated")
+        stop = self.run_hook(
+            "stop.py",
+            {"cwd": str(self.workspace), "hook_event_name": "Stop"},
+            env=env,
+        )
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        self.assertIn("DocOps lint reminder", stop.stdout)
+        self.assertFalse(stop.stdout.lstrip().startswith("{"))
+
     def test_stop_surfaces_lint_reminder_without_blocking(self) -> None:
         dol.append_event("ch", self.workspace, st="s01", slug="unvalidated")
         result = self.run_hook("stop.py", {"cwd": str(self.workspace), "hook_event_name": "Stop"})
@@ -84,6 +148,12 @@ class HookTests(unittest.TestCase):
             with self.subTest(name=name):
                 result = self.run_hook(name, {"cwd": str(empty)})
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+        kimi_env = dict(self.env)
+        kimi_env["KIMI_PLUGIN_ROOT"] = str(ROOT)
+        result = self.run_hook("session_start.py", {"cwd": str(empty)}, env=kimi_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

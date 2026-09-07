@@ -58,22 +58,22 @@ Kimi Code 不需要任何插件 API:读 `templates/kimi-auditor.md` + exchange �
 
 ```bash
 DOL="<plugin-root>/scripts/dol.py"
-python3 "$DOL" exchange new --id rpc-7004 --title "Fix RPC timeout" \
+python "$DOL" exchange new --id rpc-7004 --title "Fix RPC timeout" \
   --from user --to codex --acc "timeout retried" --base-commit abc123
-python3 "$DOL" exchange start rpc-7004
-python3 "$DOL" exchange deliver rpc-7004 --result-commit def456 \
+python "$DOL" exchange start rpc-7004
+python "$DOL" exchange deliver rpc-7004 --result-commit def456 \
   --files src/rpc.py --claims "bounded retry" \
-  --va "python3 -m unittest discover -s tests=pass"
-python3 "$DOL" exchange audit-start rpc-7004
-python3 "$DOL" exchange audit-submit rpc-7004 --verdict request_changes \
+  --va "python -m unittest discover -s tests=pass"
+python "$DOL" exchange audit-start rpc-7004
+python "$DOL" exchange audit-submit rpc-7004 --verdict request_changes \
   --finding "major|src/rpc.py:88|retry unbounded|cap at 3"
-python3 "$DOL" exchange respond rpc-7004 --finding F1 --action accept --note "capped in def789"
-python3 "$DOL" exchange deliver rpc-7004 ...   # round 2
-python3 "$DOL" exchange audit-start rpc-7004
-python3 "$DOL" exchange audit-submit rpc-7004 --verdict approve
-python3 "$DOL" exchange close rpc-7004
-python3 "$DOL" exchange status rpc-7004
-python3 "$DOL" exchange validate --all
+python "$DOL" exchange respond rpc-7004 --finding F1 --action accept --note "capped in def789"
+python "$DOL" exchange deliver rpc-7004 ...   # round 2
+python "$DOL" exchange audit-start rpc-7004
+python "$DOL" exchange audit-submit rpc-7004 --verdict approve
+python "$DOL" exchange close rpc-7004
+python "$DOL" exchange status rpc-7004
+python "$DOL" exchange validate --all
 ```
 
 ## 状态机
@@ -94,10 +94,10 @@ closed: 终态
 ## 测试命令和真实结果
 
 ```bash
-python3 -m unittest discover -s tests      # Ran 32 tests in 0.370s — OK
-python3 -m py_compile scripts/*.py hooks/*.py   # 通过
+python -m unittest discover -s tests      # Ran 32 tests in 0.370s — OK
+python -m py_compile scripts/*.py hooks/*.py   # 通过
 git diff --check                           # 通过
-python3 scripts/dol.py exchange validate --all  # 冒烟仓库 {"ok":true,"errors":[],"tasks":1}
+python scripts/dol.py exchange validate --all  # 冒烟仓库 {"ok":true,"errors":[],"tasks":1}
 ```
 
 32 = 原 18 项(全部继续通过)+ 新 14 项:happy path、changes_requested→respond→
@@ -181,9 +181,9 @@ updated to the new rules.
 
 Verification on the fix commit:
 
-- `python3 -m unittest discover -s tests`: **Ran 40 tests — OK** (18 legacy +
+- `python -m unittest discover -s tests`: **Ran 40 tests — OK** (18 legacy +
   22 exchange; 8 new tests for F1–F3 gates and tamper detection)
-- `python3 -m py_compile scripts/*.py hooks/*.py`: OK
+- `python -m py_compile scripts/*.py hooks/*.py`: OK
 - `git diff --check`: OK
 - End-to-end smoke: unanswered finding blocks round 2 with `miss:["F2"]`;
   tampered `request.md` fails validate with "markdown hash mismatch";

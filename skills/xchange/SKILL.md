@@ -18,23 +18,29 @@ Write:
 - delivery / response docs via the CLI only (never edit old rounds)
 
 Prefer:
-```bash
-# after finishing the work and running tests
-python3 "<plugin-root>/scripts/dol.py" exchange deliver <task-id> \
-  --result-commit <sha> --files a.py,b.py \
-  --claims "what changed and why" \
-  --va "python3 -m unittest discover -s tests=pass"
+- On Windows, prefer `& "<plugin-root>\scripts\dol.ps1" ...`; use `dol.cmd` from Command Prompt.
+- On Linux/macOS, use `python "<plugin-root>/scripts/dol.py" ...`.
+
+```powershell
+# after finishing the work and running tests on Windows
+& "<plugin-root>\scripts\dol.ps1" exchange deliver <task-id> `
+  --result-commit <sha> --files a.py,b.py `
+  --claims "what changed and why" `
+  --va "python -m unittest discover -s tests=pass"
 
 # when an audit report exists
-python3 "<plugin-root>/scripts/dol.py" exchange status <task-id>
-python3 "<plugin-root>/scripts/dol.py" exchange respond <task-id> \
+& "<plugin-root>\scripts\dol.ps1" exchange status <task-id>
+& "<plugin-root>\scripts\dol.ps1" exchange respond <task-id> `
   --finding F1 --action accept --note "fixed in <sha>"
-python3 "<plugin-root>/scripts/dol.py" exchange respond <task-id> \
+& "<plugin-root>\scripts\dol.ps1" exchange respond <task-id> `
   --finding F2 --action dispute --note "evidence why the finding is wrong"
 
 # after accepting/disputing, open the next round (deliver again), or close
-python3 "<plugin-root>/scripts/dol.py" exchange close <task-id>
+& "<plugin-root>\scripts\dol.ps1" exchange close <task-id>
 ```
+
+Use the same arguments with `python "<plugin-root>/scripts/dol.py"` on
+Linux/macOS.
 
 Rules:
 - Deliver only from in_progress, changes_requested, or disputed; each deliver

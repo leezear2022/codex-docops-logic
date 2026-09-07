@@ -17,10 +17,13 @@ Write:
 - none in Phase 1
 
 Prefer:
+- On Windows, prefer `& "<plugin-root>\scripts\dol.ps1" ...`; use `dol.cmd` from Command Prompt.
+- On Linux/macOS, use `python "<plugin-root>/scripts/dol.py" ...`.
+
 ```bash
-python3 "<plugin-root>/scripts/dol.py" solve --stub --mode check
-python3 "<plugin-root>/scripts/dol.py" solve --stub --mode repair
-python3 "<plugin-root>/scripts/solve_stub.py" --mode conflict
+python "<plugin-root>/scripts/dol.py" solve --stub --mode check
+python "<plugin-root>/scripts/dol.py" solve --stub --mode repair
+python "<plugin-root>/scripts/solve_stub.py" --mode conflict
 ```
 
 Rules:

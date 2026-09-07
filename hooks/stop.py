@@ -3,21 +3,21 @@
 
 from __future__ import annotations
 
-from hook_common import emit_json, has_docops, load_dol, read_hook_input, workspace
+from hook_common import emit_continue, emit_system_message, has_docops, load_dol, read_hook_input, workspace
 
 
 def main() -> int:
     data = read_hook_input()
     root = workspace(data)
     if not has_docops(root):
-        emit_json({"continue": True})
+        emit_continue()
         return 0
     result = load_dol().run_lint(root, soft=True)
-    output = {"continue": True}
     if result.get("miss"):
         fixes = ", ".join(str(item) for item in result.get("fix", []))
-        output["systemMessage"] = f"DocOps lint reminder: {result.get('why')}. Fix: {fixes}"
-    emit_json(output)
+        emit_system_message(f"DocOps lint reminder: {result.get('why')}. Fix: {fixes}")
+    else:
+        emit_continue()
     return 0
 
 

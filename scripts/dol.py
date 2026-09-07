@@ -1136,7 +1136,7 @@ def parse_va(entries: list[str]) -> list[dict[str, str]]:
             raise ExchangeError(
                 "validation must be 'cmd=result'",
                 miss=[entry],
-                fix=["--va 'python3 -m unittest discover -s tests=pass'"],
+                fix=["--va 'python -m unittest discover -s tests=pass'"],
             )
         command, result = entry.rsplit("=", 1)
         result = result.strip()

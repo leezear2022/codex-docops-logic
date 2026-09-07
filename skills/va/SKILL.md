@@ -18,10 +18,13 @@ Write:
 - optional docs/workstreams/<topic>/evidence/validation/
 
 Prefer:
+- On Windows, prefer `& "<plugin-root>\scripts\dol.ps1" ...`; use `dol.cmd` from Command Prompt.
+- On Linux/macOS, use `python "<plugin-root>/scripts/dol.py" ...`.
+
 ```bash
-python3 "<plugin-root>/scripts/dol.py" va add --stage s03 --pr 128 --result pass
-python3 "<plugin-root>/scripts/dol.py" va add --stage s03 --result def
-python3 "<plugin-root>/scripts/dol.py" lint --soft
+python "<plugin-root>/scripts/dol.py" va add --stage s03 --pr 128 --result pass
+python "<plugin-root>/scripts/dol.py" va add --stage s03 --result def
+python "<plugin-root>/scripts/dol.py" lint --soft
 ```
 
 Rules:

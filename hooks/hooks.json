@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/session_start.py",
+            "command": "python \"${PLUGIN_ROOT}/hooks/session_start.py\"",
             "statusMessage": "Loading compact DocOps context"
           }
         ]
@@ -13,11 +13,11 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|apply_patch|Edit|Write",
+        "matcher": "Bash|PowerShell|pwsh|Shell|cmd|exec_command|write_stdin|apply_patch|Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/post_tool_use.py",
+            "command": "python \"${PLUGIN_ROOT}/hooks/post_tool_use.py\"",
             "statusMessage": "Recording DocOps event"
           }
         ]
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${PLUGIN_ROOT}/hooks/stop.py",
+            "command": "python \"${PLUGIN_ROOT}/hooks/stop.py\"",
             "statusMessage": "Checking DocOps consistency"
           }
         ]

@@ -1,6 +1,6 @@
 {
   "name": "docops-logic",
-  "version": "0.2.0+codex.20260718140000",
+  "version": "0.2.0+codex.20260730075453",
   "description": "Low-token DocOps workflow with symbolic knowledge cards, deterministic constraints, and a CP-ready solver interface.",
   "author": {
     "name": "DocOps Logic"

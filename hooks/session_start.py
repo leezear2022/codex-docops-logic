@@ -3,14 +3,14 @@
 
 from __future__ import annotations
 
-from hook_common import emit_json, has_docops, read_hook_input, workspace
+from hook_common import emit_additional_context, emit_continue, has_docops, read_hook_input, workspace
 
 
 def main() -> int:
     data = read_hook_input()
     root = workspace(data)
     if not has_docops(root):
-        emit_json({"continue": True})
+        emit_continue()
         return 0
 
     docops = root / ".docops"
@@ -28,13 +28,7 @@ def main() -> int:
         "DOCOPS KB TAIL",
         *cards,
     ])
-    emit_json({
-        "continue": True,
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": context,
-        },
-    })
+    emit_additional_context(context)
     return 0
 
 

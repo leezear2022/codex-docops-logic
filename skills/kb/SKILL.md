@@ -16,9 +16,12 @@ Write:
 - .docops/ev.jsonl
 
 Prefer:
+- On Windows, prefer `& "<plugin-root>\scripts\dol.ps1" ...`; use `dol.cmd` from Command Prompt.
+- On Linux/macOS, use `python "<plugin-root>/scripts/dol.py" ...`.
+
 ```bash
-python3 "<plugin-root>/scripts/dol.py" kb add --ty L --k bench.noise --v "repeat benchmark before perf claim"
-python3 "<plugin-root>/scripts/dol.py" prom L002
+python "<plugin-root>/scripts/dol.py" kb add --ty L --k bench.noise --v "repeat benchmark before perf claim"
+python "<plugin-root>/scripts/dol.py" prom L002
 ```
 
 Rules:

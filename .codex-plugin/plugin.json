@@ -1,6 +1,6 @@
 {
   "name": "docops-logic",
-  "version": "0.3.0+codex.20260907063943",
+  "version": "0.3.0+codex.20260907070449",
   "description": "Low-token DocOps workflow with budgeted current projections, exact history archives, and deterministic constraints.",
   "author": {
     "name": "DocOps Logic"

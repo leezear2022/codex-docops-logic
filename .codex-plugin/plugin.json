@@ -1,7 +1,7 @@
 {
   "name": "docops-logic",
-  "version": "0.2.0+codex.20260730075453",
-  "description": "Low-token DocOps workflow with symbolic knowledge cards, deterministic constraints, and a CP-ready solver interface.",
+  "version": "0.3.0+codex.20260907063943",
+  "description": "Low-token DocOps workflow with budgeted current projections, exact history archives, and deterministic constraints.",
   "author": {
     "name": "DocOps Logic"
   },
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "DocOps Logic",
     "shortDescription": "Low-token DocOps workflows with symbolic constraints",
-    "longDescription": "DocOps Logic provides a token-lite workflow harness for long, multi-stage engineering work. It tracks state, events, validations, handoffs, lessons, risks, decisions, and symbolic knowledge cards in CP-ready files without requiring external services or CP-SAT dependencies in Phase 1.",
+    "longDescription": "DocOps Logic keeps long engineering work token-light with compact startup context, enforced current-document budgets, byte-exact archived history, deterministic validation, and symbolic knowledge cards.",
     "developerName": "DocOps Logic",
     "category": "Coding",
     "capabilities": [
@@ -33,7 +33,7 @@
     "defaultPrompt": [
       "Initialize DocOps Logic for this project",
       "Show DocOps status and lint reminders",
-      "Log a change and validation"
+      "Preview and compact oversized current documents"
     ],
     "brandColor": "#2563EB",
     "screenshots": []

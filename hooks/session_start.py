@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from hook_common import emit_additional_context, emit_continue, has_docops, read_hook_input, workspace
+from hook_common import emit_additional_context, emit_continue, has_docops, load_dol, read_hook_input, workspace
 
 
 def main() -> int:
@@ -13,21 +13,7 @@ def main() -> int:
         emit_continue()
         return 0
 
-    docops = root / ".docops"
-    state = (docops / "s.md").read_text(encoding="utf-8").strip()
-    rules = (docops / "c.yaml").read_text(encoding="utf-8").strip()
-    cards_path = docops / "k.jsonl"
-    cards = cards_path.read_text(encoding="utf-8").splitlines()[-20:] if cards_path.exists() else []
-    context = "\n".join([
-        "DOCOPS STATE",
-        state,
-        "",
-        "DOCOPS RULES",
-        rules,
-        "",
-        "DOCOPS KB TAIL",
-        *cards,
-    ])
+    context = load_dol().render_session_context(root)
     emit_additional_context(context)
     return 0
 

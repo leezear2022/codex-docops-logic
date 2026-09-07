@@ -63,8 +63,16 @@ class HookTests(unittest.TestCase):
         output = json.loads(result.stdout)
         context = output["hookSpecificOutput"]["additionalContext"]
         self.assertIn("DOCOPS STATE", context)
-        self.assertIn("tp: hook-demo", context)
+        self.assertIn("tp=hook-demo", context)
         self.assertIn("DOCOPS KB TAIL", context)
+
+        docops = self.workspace / ".docops"
+        legacy = "\n".join([
+            (docops / "s.md").read_text(encoding="utf-8"),
+            (docops / "c.yaml").read_text(encoding="utf-8"),
+            (docops / "k.jsonl").read_text(encoding="utf-8"),
+        ])
+        self.assertLess(dol.estimated_tokens(context), dol.estimated_tokens(legacy))
 
     def test_post_tool_use_records_redacted_signature(self) -> None:
         before = len(dol.read_jsonl(self.workspace / ".docops" / "ev.jsonl"))
@@ -140,6 +148,26 @@ class HookTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertTrue(output["continue"])
         self.assertIn("DocOps lint reminder", output["systemMessage"])
+
+    def test_stop_auto_compacts_only_when_opted_in(self) -> None:
+        projection = self.workspace / ".docops/projection.yaml"
+        projection.write_text(
+            projection.read_text(encoding="utf-8").replace(
+                "auto_compact_current: false", "auto_compact_current: true"
+            ),
+            encoding="utf-8",
+        )
+        current = self.workspace / "docs/current"
+        current.mkdir(parents=True)
+        (current / "status.md").write_text("# status\n" + "long detail\n" * 240, encoding="utf-8")
+        (current / "next_steps.md").write_text("# next\n" + "long detail\n" * 240, encoding="utf-8")
+
+        result = self.run_hook("stop.py", {"cwd": str(self.workspace), "hook_event_name": "Stop"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertIn("DocOps compacted 2 current document(s)", output["systemMessage"])
+        self.assertEqual(dol.compact_budget_issues(self.workspace), [])
+        self.assertEqual(len(dol.read_jsonl(self.workspace / ".docops/compact.jsonl")), 2)
 
     def test_hooks_are_noops_without_docops(self) -> None:
         empty = self.workspace / "empty"

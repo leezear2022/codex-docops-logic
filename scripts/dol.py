@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -38,7 +39,7 @@ CARD_TYPES = {"R", "C", "L", "X", "D", "E", "S", "P", "A", "Q"}
 VA_RESULTS = {"pass", "fail", "mix", "def"}
 SOLVE_MODES = {"check", "repair", "plan", "conflict"}
 DOC_KINDS = {"plan", "changelog"}
-EVENT_TYPES = {"init", "tp", "rm", "st", "pr", "ss", "ch", "va", "rk", "dc", "hf", "ls", "kb", "learn", "prom", "cmd", "doc"}
+EVENT_TYPES = {"init", "tp", "rm", "st", "pr", "ss", "ch", "va", "rk", "dc", "hf", "ls", "kb", "learn", "prom", "cmd", "doc", "compact"}
 STATE_STATUSES = {"active", "blocked", "done", "paused"}
 HEALTH_STATUSES = {"green", "yellow", "red"}
 CARD_STATUSES = {"cand", "acc", "ret", "blk", "pass", "fail", "mix", "def"}
@@ -245,6 +246,40 @@ rule:
     if: cmd.same>=3
     make: S.cand
     sev: s
+
+  - id: R008
+    if: docs.current
+    req: configured_line_and_token_budget
+    sev: b
+"""
+
+
+def default_projection_yaml() -> str:
+    return """v: 1
+mode: managed_projection
+
+layers:
+  current:
+    path: docs/current
+  archive:
+    path: docs/archive
+
+read_order:
+  - .docops/s.md
+  - .docops/c.yaml
+  - .docops/k.jsonl:last20
+  - docs/current/status.md
+  - docs/current/next_steps.md
+  - relevant_topic
+  - relevant_evidence_on_demand
+
+retention:
+  long_docs: false
+  current_status_max_lines: 120
+  current_next_steps_max_lines: 120
+  current_status_max_tokens: 1600
+  current_next_steps_max_tokens: 1600
+  auto_compact_current: false
 """
 
 
@@ -280,9 +315,11 @@ Read first:
 - .docops/s.md
 - .docops/c.yaml
 - last 20 lines of .docops/k.jsonl
+- compact current docs, then relevant topics/evidence on demand
 
 Before handoff:
 - dol lint --soft
+- dol compact --dry-run
 """
     append_text(path, section)
     return "appended"
@@ -316,6 +353,8 @@ def init_docops(topic: str, root: Path | None = None) -> dict[str, Any]:
         created.append(".docops/c.yaml")
     if write_if_missing(d / "p.yaml", default_p_yaml()):
         created.append(".docops/p.yaml")
+    if write_if_missing(d / "projection.yaml", default_projection_yaml()):
+        created.append(".docops/projection.yaml")
     if write_if_missing(d / "ev.jsonl", ""):
         created.append(".docops/ev.jsonl")
     agents = ensure_agents(root)
@@ -342,6 +381,426 @@ def parse_rules(root: Path | None = None) -> dict[str, dict[str, str]]:
             key, value = line.split(":", 1)
             current[key.strip()] = value.strip().strip('"').strip("'")
     return rules
+
+
+def parse_projection_scalars(root: Path | None = None) -> dict[str, str]:
+    """Parse the scalar subset of projection.yaml without adding a YAML dependency."""
+    path = docops_dir(root) / "projection.yaml"
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    stack: list[tuple[int, str]] = []
+    for raw in read_text(path).splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        while stack and stack[-1][0] >= indent:
+            stack.pop()
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        dotted = ".".join([item[1] for item in stack] + [key])
+        if value:
+            values[dotted] = value
+        else:
+            stack.append((indent, key))
+    return values
+
+
+def projection_read_order(root: Path | None = None) -> list[str]:
+    path = docops_dir(root) / "projection.yaml"
+    if not path.is_file():
+        return []
+    values: list[str] = []
+    list_indent: int | None = None
+    for raw in read_text(path).splitlines():
+        stripped = raw.strip()
+        indent = len(raw) - len(raw.lstrip(" "))
+        if stripped == "read_order:":
+            list_indent = indent
+            continue
+        if list_indent is None:
+            continue
+        if stripped and indent <= list_indent:
+            break
+        if stripped.startswith("-"):
+            value = stripped[1:].strip().strip('"').strip("'")
+            if value:
+                values.append(value)
+    return values
+
+
+def projection_bool(root: Path | None, key: str, default: bool = False) -> bool:
+    raw = parse_projection_scalars(root).get(key)
+    if raw is None:
+        return default
+    return raw.casefold() in {"1", "true", "yes", "on"}
+
+
+def safe_repo_path(root: Path, value: str) -> Path:
+    raw = Path(value)
+    if raw.is_absolute():
+        raise ValueError(f"managed path must be relative to the repository: {value}")
+    resolved = (root / raw).resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError(f"managed path escapes repository: {value}")
+    return resolved
+
+
+def estimated_tokens(text: str) -> int:
+    """Return a deterministic dependency-free estimate for mixed CJK/ASCII text."""
+    total = 0
+    for token in re.findall(
+        r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]|[A-Za-z0-9_]+|[^\sA-Za-z0-9_]",
+        text,
+    ):
+        if len(token) == 1 and ord(token) >= 0x3400:
+            total += 1
+        elif token[0].isalnum() or token[0] == "_":
+            total += max(1, math.ceil(len(token) / 4))
+        else:
+            total += 1
+    return total
+
+
+def document_metrics(text: str) -> dict[str, int]:
+    return {
+        "lines": len(text.splitlines()),
+        "chars": len(text),
+        "utf8_bytes": len(text.encode("utf-8")),
+        "estimated_tokens": estimated_tokens(text),
+    }
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest().upper()
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest().upper()
+
+
+def _positive_int(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError("document budgets must be positive integers")
+    return parsed
+
+
+def compact_configuration(
+    root: Path | None = None,
+    *,
+    status_path: str | None = None,
+    next_path: str | None = None,
+    archive_index: str | None = None,
+    max_lines: int | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    root = (root or repo_root()).resolve()
+    values = parse_projection_scalars(root)
+    current_dir = values.get("layers.current.path", "docs/current")
+    archive_dir = values.get("layers.archive.path", "docs/archive")
+    status_value = status_path or f"{current_dir}/status.md"
+    next_value = next_path or f"{current_dir}/next_steps.md"
+    index_value = archive_index or f"{archive_dir}/current_history_index.md"
+    shared_lines = max_lines
+    shared_tokens = max_tokens
+    targets = [
+        {
+            "kind": "status",
+            "path": safe_repo_path(root, status_value),
+            "max_lines": shared_lines or _positive_int(
+                values.get("retention.current_status_max_lines"), 120
+            ),
+            "max_tokens": shared_tokens or _positive_int(
+                values.get("retention.current_status_max_tokens"), 1600
+            ),
+        },
+        {
+            "kind": "next_steps",
+            "path": safe_repo_path(root, next_value),
+            "max_lines": shared_lines or _positive_int(
+                values.get("retention.current_next_steps_max_lines"), 120
+            ),
+            "max_tokens": shared_tokens or _positive_int(
+                values.get("retention.current_next_steps_max_tokens"), 1600
+            ),
+        },
+    ]
+    return {
+        "root": root,
+        "archive_dir": safe_repo_path(root, archive_dir),
+        "archive_index": safe_repo_path(root, index_value),
+        "manifest": docops_dir(root) / "compact.jsonl",
+        "targets": targets,
+    }
+
+
+def _markdown_value(value: str) -> str:
+    return value.replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _relative_link(source: Path, target: Path) -> str:
+    return Path(os.path.relpath(target, source.parent)).as_posix()
+
+
+def render_compact_current(kind: str, state: dict[str, str], archive_link: str) -> str:
+    updated = now_iso()
+    topic = _markdown_value(state.get("tp", ""))
+    next_action = state.get("next", "").strip() or "No next action recorded in `.docops/s.md`."
+    blocker = state.get("blk", "").strip() or "None recorded."
+    if kind == "status":
+        title = "Current Status"
+        purpose = "Expose the compact machine-backed handoff state without repeating run history."
+        conclusion = "\n".join([
+            "| Field | Value |",
+            "|---|---|",
+            f"| topic | `{topic}` |",
+            f"| roadmap / stage | `{_markdown_value(state.get('rm', ''))}` / `{_markdown_value(state.get('st', ''))}` |",
+            f"| status / health | `{_markdown_value(state.get('stat', ''))}` / `{_markdown_value(state.get('health', ''))}` |",
+            f"| last change / validation | `{_markdown_value(state.get('last_ch', ''))}` / `{_markdown_value(state.get('last_va', ''))}` |",
+            f"| blocker | {_markdown_value(blocker)} |",
+        ])
+    else:
+        title = "Next Steps"
+        purpose = "Expose only the immediate machine-backed action and blocker."
+        conclusion = (
+            f"Current topic is `{topic}`. Historical execution details are archived and indexed."
+        )
+    return (
+        f"# {title}\n\n"
+        f"Last updated: {updated}\n\n"
+        "<!-- docops-managed-current:v1 -->\n\n"
+        "## Purpose\n\n"
+        f"{purpose}\n\n"
+        "## Current conclusion\n\n"
+        f"{conclusion}\n\n"
+        "## Evidence\n\n"
+        "- Machine state: `.docops/s.md`\n"
+        f"- Exact archived preimage: [{archive_link}]({archive_link})\n"
+        "- Historical details remain in immutable evidence documents linked by the archive index.\n\n"
+        "## Next action\n\n"
+        f"{next_action}\n"
+    )
+
+
+def _render_compact_index(rows: list[dict[str, Any]], index_path: Path, root: Path) -> str:
+    lines = [
+        "# Current Projection History",
+        "",
+        "<!-- docops-compact-index:v1 -->",
+        "",
+        "Exact preimages archived by `dol compact`. Current projections may change; snapshots do not.",
+        "",
+        "| ID | Archived at | Source | Before | Snapshot | SHA256 |",
+        "|---|---|---|---:|---|---|",
+    ]
+    for row in rows:
+        snapshot_path = root / str(row["snapshot"])
+        link = _relative_link(index_path, snapshot_path.resolve())
+        before = row.get("before", {})
+        lines.append(
+            f"| {row['id']} | {row['ts']} | `{row['source']}` | "
+            f"{before.get('lines', '')} lines / {before.get('estimated_tokens', '')} tokens | "
+            f"[{snapshot_path.name}]({link}) | `{row['sha256']}` |"
+        )
+    lines.extend(["", "Open only the snapshot needed for the current question.", ""])
+    return "\n".join(lines)
+
+
+def render_session_context(root: Path | None = None, *, card_limit: int = 20) -> str:
+    """Render the startup context without YAML whitespace or empty state fields."""
+    root = (root or repo_root()).resolve()
+    state = read_state(root)
+    state_text = " ".join(
+        f"{key}={state[key]}" for key in STATE_ORDER if state.get(key)
+    )
+    rule_lines: list[str] = []
+    for rule_id, rule in parse_rules(root).items():
+        fields = [f"if={rule.get('if', '')}"]
+        if rule.get("req"):
+            fields.append(f"req={rule['req']}")
+        if rule.get("make"):
+            fields.append(f"make={rule['make']}")
+        fields.append(f"sev={rule.get('sev', '')}")
+        rule_lines.append(f"{rule_id} " + " ".join(fields))
+    rows = read_jsonl(card_path(root))
+    latest: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for card in rows:
+        card_id = str(card.get("id", ""))
+        if not card_id:
+            continue
+        if card_id in order:
+            order.remove(card_id)
+        order.append(card_id)
+        latest[card_id] = card
+    context_fields = (
+        "id", "ty", "k", "sc", "if", "req", "make", "sev", "st", "v",
+        "bad", "seq", "conf", "cost",
+    )
+    active_cards = [latest[card_id] for card_id in order if latest[card_id].get("st") != "ret"]
+    card_lines = [
+        compact_json({key: card[key] for key in context_fields if key in card})
+        for card in active_cards[-card_limit:]
+    ]
+    return "\n".join([
+        "DOCOPS STATE",
+        state_text,
+        "DOCOPS RULES",
+        *rule_lines,
+        "DOCOPS KB TAIL",
+        *card_lines,
+    ])
+
+
+def compact_budget_issues(root: Path | None = None) -> list[dict[str, Any]]:
+    config = compact_configuration(root)
+    issues: list[dict[str, Any]] = []
+    root_path = Path(config["root"])
+    for target in config["targets"]:
+        path = Path(target["path"])
+        if not path.is_file():
+            continue
+        metrics = document_metrics(read_text(path))
+        over = metrics["lines"] > int(target["max_lines"]) or metrics["estimated_tokens"] > int(target["max_tokens"])
+        if over:
+            issues.append({
+                "path": str(path.relative_to(root_path)),
+                "metrics": metrics,
+                "max_lines": int(target["max_lines"]),
+                "max_tokens": int(target["max_tokens"]),
+            })
+    return issues
+
+
+def run_compact(
+    root: Path | None = None,
+    *,
+    apply: bool = False,
+    force: bool = False,
+    status_path: str | None = None,
+    next_path: str | None = None,
+    archive_index: str | None = None,
+    max_lines: int | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
+    config = compact_configuration(
+        root,
+        status_path=status_path,
+        next_path=next_path,
+        archive_index=archive_index,
+        max_lines=max_lines,
+        max_tokens=max_tokens,
+    )
+    root_path = Path(config["root"])
+    state = read_state(root_path)
+    if not state:
+        raise FileNotFoundError(docops_dir(root_path) / "s.md")
+    existing_rows = read_jsonl(Path(config["manifest"]))
+    pending: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    for target in config["targets"]:
+        path = Path(target["path"])
+        if not path.is_file():
+            reports.append({"path": str(path.relative_to(root_path)), "status": "missing"})
+            continue
+        original_bytes = path.read_bytes()
+        original = original_bytes.decode("utf-8")
+        before = document_metrics(original)
+        needs = force or before["lines"] > int(target["max_lines"]) or before["estimated_tokens"] > int(target["max_tokens"])
+        if not needs:
+            reports.append({
+                "path": str(path.relative_to(root_path)),
+                "status": "within_budget",
+                "before": before,
+                "budget": {"max_lines": target["max_lines"], "max_tokens": target["max_tokens"]},
+            })
+            continue
+        digest = sha256_bytes(original_bytes)
+        snapshot = Path(config["archive_dir"]) / "current-snapshots" / f"{path.stem}.{digest[:12]}.md"
+        archive_link = _relative_link(path, snapshot)
+        compacted = render_compact_current(str(target["kind"]), state, archive_link)
+        after = document_metrics(compacted)
+        if after["lines"] > int(target["max_lines"]) or after["estimated_tokens"] > int(target["max_tokens"]):
+            raise ValueError(f"generated compact projection exceeds configured budget: {path}")
+        row = {
+            "id": f"cmp{len(existing_rows) + len(pending) + 1:06d}",
+            "ts": now_iso(),
+            "source": str(path.relative_to(root_path)).replace("\\", "/"),
+            "snapshot": str(snapshot.relative_to(root_path)).replace("\\", "/"),
+            "sha256": digest,
+            "before": before,
+            "after": after,
+        }
+        pending.append({"row": row, "path": path, "snapshot": snapshot, "original_bytes": original_bytes, "compacted": compacted})
+        reports.append({
+            "path": row["source"],
+            "status": "would_compact" if not apply else "compacted",
+            "snapshot": row["snapshot"],
+            "before": before,
+            "after": after,
+            "estimated_token_reduction": before["estimated_tokens"] - after["estimated_tokens"],
+        })
+    if apply and pending:
+        index_path = Path(config["archive_index"])
+        if index_path.exists() and "<!-- docops-compact-index:v1 -->" not in read_text(index_path):
+            raise ValueError(f"refusing to overwrite unmanaged archive index: {index_path}")
+        for item in pending:
+            snapshot = Path(item["snapshot"])
+            if snapshot.exists() and sha256_bytes(snapshot.read_bytes()) != item["row"]["sha256"]:
+                raise ValueError(f"snapshot hash collision: {snapshot}")
+        for item in pending:
+            snapshot = Path(item["snapshot"])
+            if not snapshot.exists():
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                snapshot.write_bytes(bytes(item["original_bytes"]))
+            write_text(Path(item["path"]), str(item["compacted"]))
+            append_jsonl(Path(config["manifest"]), dict(item["row"]))
+        all_rows = existing_rows + [dict(item["row"]) for item in pending]
+        write_text(index_path, _render_compact_index(all_rows, index_path, root_path))
+        event = append_event(
+            "compact",
+            root_path,
+            action="apply",
+            path=str(index_path.relative_to(root_path)).replace("\\", "/"),
+            summary=f"{len(pending)} current projections compacted",
+        )
+        event_id: str | None = str(event["id"])
+    else:
+        event_id = None
+    before_tokens = sum(int(report.get("before", {}).get("estimated_tokens", 0)) for report in reports)
+    after_tokens = sum(int(report.get("after", report.get("before", {})).get("estimated_tokens", 0)) for report in reports)
+    return {
+        "ok": True,
+        "mode": "apply" if apply else "dry-run",
+        "changed": len(pending) if apply else 0,
+        "needs_compaction": len(pending),
+        "targets": reports,
+        "estimated_tokens_before": before_tokens,
+        "estimated_tokens_after": after_tokens,
+        "estimated_token_reduction": before_tokens - after_tokens,
+        "event": event_id,
+    }
+
+
+def cmd_compact(args: argparse.Namespace) -> int:
+    result = run_compact(
+        apply=bool(args.apply),
+        force=bool(args.force),
+        status_path=args.status_path,
+        next_path=args.next_path,
+        archive_index=args.archive_index,
+        max_lines=args.max_lines,
+        max_tokens=args.max_tokens,
+    )
+    print_json(result)
+    return 0
 
 
 def long_docs_enabled(root: Path | None = None) -> bool:
@@ -439,6 +898,16 @@ def date_arg(value: str) -> str:
     except ValueError as exc:
         raise argparse.ArgumentTypeError("date must be a real YYYY-MM-DD date") from exc
     return value
+
+
+def positive_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def cmd_doc_new(args: argparse.Namespace) -> int:
@@ -667,6 +1136,9 @@ def cmd_hf_upd(args: argparse.Namespace) -> int:
         roadmap=state.get("rm", ""),
         result=state.get("health", ""),
         slug="handoff",
+        next=state.get("next", ""),
+        blocker=state.get("blk", ""),
+        read="\n".join(f"- {item}" for item in projection_read_order(root)),
         updated=now_iso(),
     )
     path = docops_dir(root) / "handoff.md"
@@ -833,6 +1305,32 @@ def run_lint(root: Path | None = None, soft: bool = False) -> dict[str, Any]:
     events = event_index(read_jsonl(event_path(root)))
     state = read_state(root)
     issues: list[dict[str, Any]] = []
+
+    if (docops_dir(root) / "projection.yaml").is_file():
+        try:
+            for item in compact_budget_issues(root):
+                metrics = item["metrics"]
+                add_issue(
+                    issues,
+                    "R008",
+                    "b",
+                    "docs.current.budget",
+                    (
+                        f"{item['path']} has {metrics['lines']} lines and "
+                        f"about {metrics['estimated_tokens']} tokens; limits are "
+                        f"{item['max_lines']} lines/{item['max_tokens']} tokens"
+                    ),
+                    "dol compact --dry-run, then dol compact --apply",
+                )
+        except ValueError as exc:
+            add_issue(
+                issues,
+                "R008",
+                "b",
+                "docs.current.config",
+                str(exc),
+                "fix .docops/projection.yaml compact paths and budgets",
+            )
 
     if "R001" in enabled:
         ch_events = [e for e in events if e.get("ty") == "ch"]
@@ -1786,6 +2284,18 @@ def build_parser() -> argparse.ArgumentParser:
     hf_sub = p_hf.add_subparsers(dest="hf_cmd", required=True)
     p = hf_sub.add_parser("upd", help="update handoff summary")
     p.set_defaults(func=cmd_hf_upd)
+
+    p = sub.add_parser("compact", help="archive and compact managed current docs")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="preview only; default")
+    mode.add_argument("--apply", action="store_true", help="archive exact preimages and rewrite")
+    p.add_argument("--force", action="store_true", help="compact even when documents are within budget")
+    p.add_argument("--status-path", help="managed status path relative to the repository")
+    p.add_argument("--next-path", help="managed next-steps path relative to the repository")
+    p.add_argument("--archive-index", help="history index path relative to the repository")
+    p.add_argument("--max-lines", type=positive_int_arg, help="shared line budget override")
+    p.add_argument("--max-tokens", type=positive_int_arg, help="shared estimated-token budget override")
+    p.set_defaults(func=cmd_compact)
 
     p_doc = sub.add_parser("doc", help="standalone small plan/changelog docs")
     doc_sub = p_doc.add_subparsers(dest="doc_cmd", required=True)

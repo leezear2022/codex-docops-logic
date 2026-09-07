@@ -18,7 +18,8 @@ Running `init` in a target repository creates:
 ├── c.yaml     # deterministic symbolic rules
 ├── k.jsonl    # append-only knowledge cards
 ├── ev.jsonl   # append-only workflow events
-└── p.yaml     # compact user preferences
+├── p.yaml     # compact user preferences
+└── projection.yaml # read order, current-document budgets, auto-compact policy
 ```
 
 It also creates or safely appends a short DocOps section to `AGENTS.md`.
@@ -167,6 +168,7 @@ validation. The second passes after `va add` records evidence.
 | `learn` | Suggest candidate cards from repeated events |
 | `prom` | Accept or retire a candidate card append-only |
 | `hf upd` | Refresh a compact handoff |
+| `compact --dry-run/--apply` | Measure, archive, and compact managed current docs |
 | `doc new` | Create one standalone plan or changelog |
 | `exchange ...` | Cross-agent delivery, audit, response, and closure protocol |
 | `validate` | Validate state and JSONL rows against repository contracts |
@@ -176,6 +178,33 @@ validation. The second passes after `va add` records evidence.
 Run `& $DOL --help` on Windows, or
 `python "$DOCOPS_PLUGIN/scripts/dol.py" --help` on Linux/macOS, for all
 options.
+
+## Token-budgeted current documents
+
+Version 0.3 adds deterministic compaction for only the managed current
+projections, normally `docs/current/status.md` and `next_steps.md`. It does not
+rewrite topic pages, rules, experiment receipts, or evidence.
+
+```powershell
+& $DOL compact --dry-run
+& $DOL compact --apply
+```
+
+The dry run reports lines and estimated tokens before and after. Apply mode
+stores the original bytes below `docs/archive/current-snapshots/`, records a
+SHA-256 in `.docops/compact.jsonl`, rebuilds a navigable history index, and
+generates short current projections from `.docops/s.md`. Repeating apply on
+documents already within budget is a no-op.
+
+`lint` rule R008 enforces the limits in `.docops/projection.yaml`. Set
+`retention.auto_compact_current: true` to let the Stop hook compact an oversized
+managed projection automatically. The default is `false`, so existing
+repositories are never rewritten merely by installing the plugin.
+
+The SessionStart hook also renders state and rules in a whitespace-free compact
+form and injects only the latest effective projection of each knowledge-card
+ID, rather than duplicate append-history rows. The full JSONL history and
+archived documents remain available on disk and are loaded only when needed.
 
 ## Standalone microdocuments
 

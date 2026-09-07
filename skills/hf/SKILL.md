@@ -28,4 +28,5 @@ python "<plugin-root>/scripts/dol.py" lint --soft
 
 Rules:
 - Keep handoff short.
+- Project `next`, `blk`, and `read_order` from machine state and projection policy.
 - Include next read targets and blockers.

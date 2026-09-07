@@ -16,6 +16,7 @@ class PluginContractTests(unittest.TestCase):
 
     def test_manifest_required_fields_and_version(self) -> None:
         self.assertEqual(self.manifest["name"], "docops-logic")
+        self.assertEqual(self.manifest["version"].split("+", 1)[0], "0.3.0")
         self.assertRegex(
             self.manifest["version"],
             r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$",

@@ -6,7 +6,7 @@
   "properties": {
     "id": {"type": "string", "pattern": "^ev[0-9]{6}$"},
     "ts": {"type": "string"},
-    "ty": {"enum": ["init", "tp", "rm", "st", "pr", "ss", "ch", "va", "rk", "dc", "hf", "ls", "kb", "learn", "prom", "cmd", "doc"]},
+    "ty": {"enum": ["init", "tp", "rm", "st", "pr", "ss", "ch", "va", "rk", "dc", "hf", "ls", "kb", "learn", "prom", "cmd", "doc", "compact"]},
     "st": {"type": "string"},
     "rm": {"type": "string"},
     "pr": {"type": "integer"},

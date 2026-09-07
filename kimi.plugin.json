@@ -1,7 +1,7 @@
 {
   "name": "docops-logic",
-  "version": "0.2.0",
-  "description": "Low-token DocOps workflow with deterministic constraints, evidence, and cross-agent exchange.",
+  "version": "0.3.0",
+  "description": "Low-token DocOps workflow with budgeted current projections and exact archived history.",
   "author": {
     "name": "DocOps Logic"
   },
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "DocOps Logic",
     "shortDescription": "Compact workflow state, evidence, and handoffs",
-    "longDescription": "Track compact state, deterministic rules, validation evidence, reusable knowledge, handoffs, and immutable cross-agent exchange rounds inside the repository.",
+    "longDescription": "Track compact state, enforce current-document token budgets, preserve exact indexed history, and manage deterministic evidence and handoffs.",
     "developerName": "DocOps Logic",
     "websiteURL": "https://github.com/leezear2022/codex-docops-logic"
   },

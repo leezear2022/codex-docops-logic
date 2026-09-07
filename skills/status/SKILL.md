@@ -27,4 +27,5 @@ python "<plugin-root>/scripts/dol.py" lint --soft
 
 Rules:
 - Keep s.md short.
-- Put long explanation in optional workstream docs, not s.md.
+- Keep current projections within `.docops/projection.yaml` budgets.
+- Put stable detail in topic pages and immutable evidence; open history on demand.

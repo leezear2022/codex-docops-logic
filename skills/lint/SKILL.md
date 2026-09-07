@@ -10,6 +10,7 @@ Use before handoff, after changes, or when deciding if a claim has enough eviden
 Read:
 - .docops/s.md
 - .docops/c.yaml
+- .docops/projection.yaml
 - .docops/k.jsonl
 - .docops/ev.jsonl
 
@@ -28,3 +29,5 @@ python "<plugin-root>/scripts/lint.py" --soft
 Rules:
 - Script output is source of truth.
 - LLM may explain results but must not decide compliance freely.
+- R008 reports managed current documents that exceed configured line or token budgets.
+- Preview `compact --dry-run` before applying any rewrite.

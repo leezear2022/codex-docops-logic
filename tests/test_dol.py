@@ -37,6 +37,15 @@ class DocOpsTests(unittest.TestCase):
     def init(self, topic: str = "demo") -> dict:
         return dol.init_docops(topic, self.root)
 
+    def write_long_current_docs(self) -> tuple[bytes, bytes]:
+        current = self.root / "docs" / "current"
+        current.mkdir(parents=True)
+        status = ("# Status\r\n\r\n" + "historical status detail\r\n" * 240).encode("utf-8")
+        next_steps = ("# Next\r\n\r\n" + "historical next detail\r\n" * 220).encode("utf-8")
+        (current / "status.md").write_bytes(status)
+        (current / "next_steps.md").write_bytes(next_steps)
+        return status, next_steps
+
     def test_init_is_non_destructive_and_idempotent(self) -> None:
         first = self.init()
         state_before = (self.root / ".docops" / "s.md").read_text(encoding="utf-8")
@@ -120,6 +129,63 @@ class DocOpsTests(unittest.TestCase):
         for path in sorted((ROOT / "schemas").glob("*.json")):
             with self.subTest(path=path.name):
                 json.loads(path.read_text(encoding="utf-8"))
+
+    def test_compact_dry_run_is_read_only_and_reduces_tokens(self) -> None:
+        self.init()
+        originals = self.write_long_current_docs()
+        result = dol.run_compact(self.root)
+
+        self.assertEqual(result["mode"], "dry-run")
+        self.assertEqual(result["changed"], 0)
+        self.assertEqual(result["needs_compaction"], 2)
+        self.assertGreater(result["estimated_token_reduction"], 0)
+        self.assertEqual((self.root / "docs/current/status.md").read_bytes(), originals[0])
+        self.assertFalse((self.root / ".docops/compact.jsonl").exists())
+
+    def test_compact_apply_preserves_exact_history_and_is_idempotent(self) -> None:
+        self.init()
+        dol.update_state(self.root, next="Run the focused regression.", blk="None")
+        originals = self.write_long_current_docs()
+        result = dol.run_compact(self.root, apply=True)
+
+        self.assertEqual(result["changed"], 2)
+        rows = dol.read_jsonl(self.root / ".docops/compact.jsonl")
+        self.assertEqual(len(rows), 2)
+        for row, original in zip(rows, originals):
+            snapshot = self.root / row["snapshot"]
+            self.assertEqual(snapshot.read_bytes(), original)
+            self.assertEqual(dol.sha256_bytes(original), row["sha256"])
+        index = (self.root / "docs/archive/current_history_index.md").read_text(encoding="utf-8")
+        self.assertIn("Current Projection History", index)
+        self.assertIn("status.", index)
+        self.assertEqual(dol.compact_budget_issues(self.root), [])
+        second = dol.run_compact(self.root, apply=True)
+        self.assertEqual(second["changed"], 0)
+        self.assertEqual(len(dol.read_jsonl(self.root / ".docops/compact.jsonl")), 2)
+
+    def test_compact_rejects_paths_outside_repository(self) -> None:
+        self.init()
+        with self.assertRaises(ValueError):
+            dol.run_compact(self.root, status_path="../outside.md")
+
+    def test_lint_enforces_current_document_budget(self) -> None:
+        self.init()
+        self.write_long_current_docs()
+        result = dol.run_lint(self.root)
+        self.assertIn("R008", result["rule"])
+        dol.run_compact(self.root, apply=True)
+        self.assertNotIn("R008", dol.run_lint(self.root)["rule"])
+
+    def test_handoff_projects_state_and_read_order(self) -> None:
+        self.init()
+        dol.update_state(self.root, next="Run E2 comparison", blk="Missing resolver")
+        with working_directory(self.root):
+            args = dol.build_parser().parse_args(["hf", "upd"])
+            self.assertEqual(dol.cmd_hf_upd(args), 0)
+        handoff = (self.root / ".docops/handoff.md").read_text(encoding="utf-8")
+        self.assertIn("next: Run E2 comparison", handoff)
+        self.assertIn("blk: Missing resolver", handoff)
+        self.assertIn("- docs/current/status.md", handoff)
 
 
 if __name__ == "__main__":

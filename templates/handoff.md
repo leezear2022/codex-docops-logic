@@ -5,10 +5,8 @@ tp: {{topic}}
 rm: {{roadmap}}
 st: {{stage}}
 health: {{result}}
-next:
-blk:
+next: {{next}}
+blk: {{blocker}}
 read:
-- .docops/s.md
-- .docops/c.yaml
-- tail .docops/k.jsonl
+{{read}}
 updated: {{updated}}
